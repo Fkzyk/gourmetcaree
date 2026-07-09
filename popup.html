@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>スカウトメール生成 - グルメキャリー</title>
+  <style>
+    body {
+      width: 280px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+      font-size: 13px;
+      color: #333;
+    }
+    h2 {
+      font-size: 15px;
+      margin: 0 0 12px 0;
+      color: #1a73e8;
+    }
+    .info-box {
+      background: #e8f0fe;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #1a47a0;
+    }
+    .info-box b { color: #1a73e8; }
+    .step {
+      margin: 12px 0;
+      padding: 8px 12px;
+      background: #f8f9fa;
+      border-left: 3px solid #1a73e8;
+      border-radius: 0 6px 6px 0;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .step-num {
+      font-weight: bold;
+      color: #1a73e8;
+    }
+    .note {
+      font-size: 11px;
+      color: #888;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h2>✉ スカウトメール自動生成</h2>
+  <div class="info-box">
+    <b>使い方</b><br>
+    グルメキャリー管理画面の候補者詳細ページ（スカウトフォームのある画面）を開くと、右下にボタンが表示されます。
+  </div>
+  <div class="step">
+    <span class="step-num">① </span>候補者詳細ページを開く
+  </div>
+  <div class="step">
+    <span class="step-num">② </span>定型文を使う場合は先に「定型文を選択」→「決定」を済ませる<br>（後で選ぶと生成した件名・本文が上書きされます）
+  </div>
+  <div class="step">
+    <span class="step-num">③ </span>右下の「✨ Geminiでスカウトメール生成」をクリック
+  </div>
+  <div class="step">
+    <span class="step-num">④ </span>Geminiタブが自動で開き、メールを生成。<br>完了後、件名・本文が自動入力されます
+  </div>
+  <div class="step">
+    <span class="step-num">⑤ </span>内容を確認して送信する
+  </div>
+  <p class="note">※ Geminiにログインしていることを確認してください</p>
+</body>
+</html>
