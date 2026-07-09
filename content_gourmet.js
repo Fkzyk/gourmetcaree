@@ -80,25 +80,31 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 
 はじめまして。株式会社資さん　人事採用担当　古川です。
 
-続けて、類型別に以下の趣旨で書く。
+続けて、類型に応じて以下の確定文をそのまま使う（語尾・敬体を変えない）。
 
 類型A:
-資さんうどんは北九州発祥のうどん専門チェーンで、現在109店舗（2026年6月末時点）まで拡大し、2030年には400店舗を計画している。その計画の中で、このたび愛知を中心に東海地方への出店が決まった。今回連絡したのは、その新店舗を支える店長候補を探しているため。
+資さんうどんは、北九州発祥のうどん専門チェーンです。
+現在109店舗（2026年6月末時点）まで拡大しており、2030年には400店舗の出店を計画しています。
+その計画の中で、このたび愛知を中心とした東海地方への出店が決まりました。
+今回ご連絡したのは、その新店舗を支える店長候補となる方を探しているためです。
 
 類型B:
-資さんうどんは北九州発祥のうどん専門チェーンで、現在109店舗（2026年6月末時点）まで拡大し、2030年には400店舗を計画している。関東エリアでも出店を続けており、店舗を支える店長候補を探している。
+資さんうどんは、北九州発祥のうどん専門チェーンです。
+現在109店舗（2026年6月末時点）まで拡大しており、2030年には400店舗の出店を計画しています。
+関東エリアでも出店を続けており、店舗を支える店長候補となる方を探しています。
 
 類型C:
-類型Bと同様の構成で、関東を関西に置き換える。
+類型Bの確定文で、「関東エリア」を「関西エリア」に置き換えて使う。
 
 類型D:
-資さんうどんは北九州発祥のうどん専門チェーンで、現在109店舗（2026年6月末時点）まで拡大し、2030年には400店舗を計画している。九州から関東まで出店エリアを広げており、各地の店舗を支える店長候補を探している。
+資さんうどんは、北九州発祥のうどん専門チェーンです。
+現在109店舗（2026年6月末時点）まで拡大しており、2030年には400店舗の出店を計画しています。
+九州から関東まで出店エリアを広げており、各地の店舗を支える店長候補となる方を探しています。
 
 ## 古川の視点
 
 実は、私自身もうどん業界のトップ企業で同じような急成長の時期を経験してきました。
-組織が小さいころの熱量から、急速に拡大していく様子を最前線で見てきたからこそ、
-今の資さんうどんの面白さが分かるんです。
+組織が小さいころの熱量から、急速に拡大していく様子を最前線で見てきたからこそ、今の資さんうどんの面白さが分かるんです。
 
 麺業態フラグが立っている場合はここに一文追加する。候補者の麺業態経験（うどん・蕎麦・ラーメン等）に触れ、同じ麺業態を歩んできた者としての親近感を、押しつけがましくならない範囲で示す。
 
@@ -116,16 +122,10 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 ## 職務とキャリアパス
 
 ただ、ここで重要なのは、単に「経験を活かしてください」というわけではないんです。
-資さんうどんでは、調理経験を基盤にしながらも、
-日々の営業を安定させることと同時に、
-スタッフ育成や数値管理といった、より経営的な視点も
-段階的に学んでいただきたいと考えています。
-つまり、今回の募集は調理専門職ではなく、
-店長候補としての採用を想定しており、
-将来的には複数店舗を支えるエリアマネージャーへの
-成長も視野に入れています。
+資さんうどんでは、調理経験を基盤にしながらも、日々の営業を安定させることと同時に、スタッフ育成や数値管理といった、より経営的な視点も段階的に学んでいただきたいと考えています。
+つまり、今回の募集は調理専門職ではなく、店長候補としての採用を想定しており、将来的には複数店舗を支えるエリアマネージャーへの成長も視野に入れています。
 
-類型Aの場合はここに新店ならではの訴求を加える。趣旨: 新店の立ち上げは、既存店と違って上のポストが埋まっていない。立ち上げメンバーとして店の文化を最初からつくる側に回れる。既存の人間関係や序列の中に入っていく転職とは条件が違う。
+類型Aの場合はここに新店ならではの訴求を加える。趣旨: 新店の立ち上げは、既存店と違って上のポストが埋まっていない。立ち上げメンバーとして店の文化を最初からつくる側に回れる。既存の人間関係や序列の中に入っていく転職とは条件が違う。（この趣旨を敬体の自然な文章に変換して書くこと。転記しない）
 
 ## 入社後の実績
 
@@ -140,12 +140,11 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 これまでの経験は活かしつつ、新しいステージで成長している。
 今は、その実感を持って仕事をしています。
 
-離職中フラグが立っている場合、この後に一文だけ、選考スピードに触れてよい。趣旨: 当社は選考がスピーディーで、内定まで最短14日。次の一歩を早く決めたい方にも合っている。焦らせる表現・急かす表現は使わない。
+離職中フラグが立っている場合、この後に一文だけ、選考スピードに触れてよい。趣旨: 当社は選考がスピーディーで、内定まで最短14日。次の一歩を早く決めたい方にも合っている。焦らせる表現・急かす表現は使わない。（この趣旨を敬体の自然な文章に変換して書くこと。転記しない）
 
 ## 募集条件（すかいらーく言及はここに統合する。独立した一文として浮かせない）
 
 直前の転職メッセージから以下へ自然につなげる。すかいらーくへの言及は募集条件の導入として書き、この位置以外では言及しない。
-「なお、」の前に空行を入れないこと。直前の転職メッセージの段落に改行のみで直接続け、同じ段落の一部として書く。
 
 なお、資さんは2024年からすかいらーくグループの一員となりました。
 待遇や制度もその安定した基盤の上で整えており、条件は以下のとおりです。
@@ -168,11 +167,8 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 
 ## 行動喚起
 
-もし少しでもご関心をお持ちいただけましたら、
-まずはオンラインで気軽にお話しするカジュアル面談でも、
-選考として面接に進む形でも、どちらでも大丈夫です。
-「話だけ聞いてみたい」「面接希望」という一言でいいので、
-返信をいただけると嬉しいです。
+もし少しでもご関心をお持ちいただけましたら、まずはオンラインで気軽にお話しするカジュアル面談でも、選考として面接に進む形でも、どちらでも大丈夫です。
+「話だけ聞いてみたい」「面接希望」という一言でいいので、返信をいただけると嬉しいです。
 
 ## 署名
 
@@ -229,6 +225,10 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 # 厳守事項
 
 - 上記フォーマット以外は一切出力しない
+- メール本文はすべて敬体（です・ます調）で書く。常体（〜だ・〜である・〜している）の文を混ぜない
+- 本文の改行は文末（。）の直後のみ。読点（、）や文の途中で改行しない
+- 内容のまとまり（ブロック）ごとに空行1行を入れて段落を分ける
+- 「趣旨:」として示された指示文は本文にそのまま転記せず、敬体の自然な文章に変換して書く
 - コードブロック（\`\`\`）で囲まない
 - 「件名:」「本文:」などのラベル文字は絶対に出力しない
 - セクションラベル・見出し・マークダウン記号は絶対に出力しない
@@ -323,7 +323,6 @@ function createPanel() {
   const panel = document.createElement('div');
   panel.id = 'scout-ext-panel';
   panel.innerHTML = `
-    <div id="scoutResultBox" class="scout-result-box" style="display:none;"></div>
     <div id="scoutStatus" class="scout-status" style="display:none;"></div>
     <div class="scout-btn-wrapper">
       <button class="scout-btn scout-btn-primary" id="scoutGenerateBtn">
@@ -688,8 +687,6 @@ chrome.runtime.onMessage.addListener((message) => {
     subjectText = cleaned.subject;
     bodyText = cleaned.body;
 
-    const resultBox = document.getElementById('scoutResultBox');
-
     // 異常検知: 件名・本文が短すぎる場合
     if (subjectText.length < 10) {
       showStatus(`⚠ 件名が短すぎます（${subjectText.length}文字）。再生成してください。`, 'warning');
@@ -703,21 +700,6 @@ chrome.runtime.onMessage.addListener((message) => {
     }
 
     if (subjectText && bodyText) {
-      // 生成結果を緑のボックスに表示（件名70/本文4000はグルメキャリーの上限）
-      if (resultBox) {
-        const subjectLen = subjectText.length;
-        const bodyLen = bodyText.length;
-        const subjectClass = subjectLen > 70 ? 'scout-char-over' : 'scout-char-ok';
-        const bodyClass = bodyLen > 4000 ? 'scout-char-over' : 'scout-char-ok';
-
-        resultBox.innerHTML =
-          `<div class="scout-result-label">件名 <span class="${subjectClass}">${subjectLen}/70文字</span></div>` +
-          `<div class="scout-result-text">${subjectText}</div>` +
-          `<div class="scout-result-label" style="margin-top:8px;">本文 <span class="${bodyClass}">${bodyLen}/4000文字</span></div>` +
-          `<div class="scout-result-text">${bodyText.substring(0, 200)}${bodyText.length > 200 ? '...' : ''}</div>`;
-        resultBox.style.display = 'block';
-      }
-
       showStatus('⏳ フォームに自動入力中...', 'info');
       (async () => {
         // まずisolated worldで入力を試みる
@@ -739,12 +721,10 @@ chrome.runtime.onMessage.addListener((message) => {
           // 少し待ってから「確認」ボタンをクリック
           await new Promise(r => setTimeout(r, 500));
           const confirmed = await clickConfirmButton();
-          const newCount = await incrementScoutCount();
-          updateBadge(newCount);
           if (confirmed) {
-            showStatus(`✅ 確認画面が表示されました。内容を確認して「送信」を押してください。（本日 ${newCount} 通目）`, 'success');
+            showStatus('✅ 確認画面が表示されました。内容を確認して「送信」を押してください。', 'success');
           } else {
-            showStatus(`✅ 入力完了。内容を確認して送信してください。（本日 ${newCount} 通目）`, 'success');
+            showStatus('✅ 入力完了。内容を確認して「送信」を押してください。', 'success');
           }
         } else if (subjectFilled || bodyFilled) {
           showStatus(`⚠ 一部入力できませんでした（件名:${subjectFilled ? '○' : '×'} 本文:${bodyFilled ? '○' : '×'}）`, 'warning');
@@ -752,10 +732,9 @@ chrome.runtime.onMessage.addListener((message) => {
           showStatus('⚠ フォームフィールドが見つかりませんでした。手動で入力してください。', 'warning');
         }
 
-        // 8秒後にステータスとリザルトを非表示
+        // 8秒後にステータスを非表示
         setTimeout(() => {
           hideStatus();
-          if (resultBox) resultBox.style.display = 'none';
           if (generateBtn) generateBtn.disabled = false;
         }, 8000);
       })();
@@ -771,6 +750,16 @@ chrome.runtime.onMessage.addListener((message) => {
     showStatus(message.text, 'info');
   }
 });
+
+// ── サイトの「送信」ボタン押下で当日カウンタを加算 ──
+// バッジは「実際に送信ボタンを押した数」を表す（生成しただけでは増えない）
+document.addEventListener('click', (e) => {
+  const target = e.target instanceof Element ? e.target : null;
+  if (!target) return;
+  const btn = target.closest('#btn_conf, input[type="submit"][name="conf"]');
+  if (!btn) return;
+  incrementScoutCount().then(count => updateBadge(count));
+}, true);
 
 // ── ページ読み込み完了後に初期化 ──
 function tryInit() {
