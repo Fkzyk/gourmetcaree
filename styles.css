@@ -36,16 +36,16 @@
   line-height: 1;
 }
 
+/* 無地の青い丸ボタン（ラベルなし・目立たないデザイン） */
 .scout-btn {
   border: none;
-  border-radius: 32px;
+  border-radius: 50%;
   cursor: pointer;
-  font-size: 17px;
-  font-weight: bold;
-  padding: 16px 36px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   transition: background 0.15s, box-shadow 0.15s;
-  white-space: nowrap;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.22);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
 }
 
 .scout-btn:disabled {
