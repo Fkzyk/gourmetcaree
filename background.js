@@ -38,35 +38,38 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 // ── Geminiタブを開く or 再利用する ────────────────────────
-function openOrReuseGemini() {
-  chrome.tabs.query({ url: 'https://gemini.google.com/*' }, (tabs) => {
+// グルメキャリーのタブと同じウインドウ内で開く（別ウインドウのGeminiタブは使わない）
+function openOrReuseGemini(sourceWindowId) {
+  chrome.tabs.query({ url: 'https://gemini.google.com/*', windowId: sourceWindowId }, (tabs) => {
     if (chrome.runtime.lastError) {
       console.error('タブ検索失敗:', chrome.runtime.lastError.message);
-      createNewGeminiTab();
+      createNewGeminiTab(sourceWindowId);
       return;
     }
 
     if (tabs && tabs.length > 0) {
       const existingTab = tabs[0];
-      console.log('既存Geminiタブを再利用:', existingTab.id);
+      console.log('同一ウインドウの既存Geminiタブを再利用:', existingTab.id);
       chrome.tabs.update(existingTab.id, {
         url: 'https://gemini.google.com/app',
         active: true
       }, () => {
         if (chrome.runtime.lastError) {
           console.error('タブ更新失敗:', chrome.runtime.lastError.message);
-          createNewGeminiTab();
+          createNewGeminiTab(sourceWindowId);
         }
       });
     } else {
-      console.log('Geminiタブが無いため新規作成');
-      createNewGeminiTab();
+      console.log('同一ウインドウにGeminiタブが無いため新規作成');
+      createNewGeminiTab(sourceWindowId);
     }
   });
 }
 
-function createNewGeminiTab() {
-  chrome.tabs.create({ url: 'https://gemini.google.com/app' }, (tab) => {
+function createNewGeminiTab(sourceWindowId) {
+  const createProps = { url: 'https://gemini.google.com/app' };
+  if (sourceWindowId !== undefined) createProps.windowId = sourceWindowId;
+  chrome.tabs.create(createProps, (tab) => {
     if (chrome.runtime.lastError) {
       console.error('Geminiタブ作成失敗:', chrome.runtime.lastError.message);
       if (pendingRequest) {
@@ -89,7 +92,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('openGeminiリクエスト受信');
     pendingRequest = { sourceTabId: sender.tab.id, prompt: message.prompt };
     promptSent = false;
-    openOrReuseGemini();
+    openOrReuseGemini(sender.tab.windowId);
     sendResponse({ status: 'ok' });
     return true;
   }
