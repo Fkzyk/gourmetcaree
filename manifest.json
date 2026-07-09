@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "スカウトメール自動生成 - グルメキャリー",
+  "version": "1.0",
+  "description": "グルメキャリー管理画面の候補者情報からGeminiでスカウトメールを自動生成します",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://kanri.gourmetcaree.jp/*",
+    "https://gemini.google.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://kanri.gourmetcaree.jp/*"],
+      "js": ["content_gourmet_main.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://kanri.gourmetcaree.jp/*"],
+      "js": ["content_gourmet.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content_gemini_main.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content_gemini.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "スカウトメール生成 - グルメキャリー"
+  }
+}
