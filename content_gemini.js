@@ -75,7 +75,8 @@ function removeGeminiSuggestions(text) {
   // セクションラベル行を除去（「ラベル:」「ラベル：」だけの行を丸ごと削除）
   const sectionLabels = [
     '冒頭', '古川の視点', '候補者評価', '職務とキャリアパス',
-    '転職メッセージ', '面接招待', '行動喚起', '募集条件', '署名',
+    '入社後の実績', '転職メッセージ', '面接招待', '行動喚起',
+    'すかいらーくグループ言及', '募集条件', '署名',
     '件名', '本文', '見出し', 'タイトル', 'Subject', 'Body',
     'メール本文'
   ];
@@ -106,8 +107,11 @@ function removeGeminiSuggestions(text) {
 
 // ── 件名・本文パース（ラベル文字・Gemini提案を除去して返す）───
 function parseScoutMessage(text) {
-  // Markdownの装飾を除去
-  let normalized = text.replace(/\*\*/g, '').replace(/^#+\s*/gm, '');
+  // Markdownの装飾・コードブロック記号を除去
+  let normalized = text
+    .replace(/^\s*`{3,}.*$/gm, '')
+    .replace(/\*\*/g, '')
+    .replace(/^#+\s*/gm, '');
 
   // Geminiの提案・補足を除去
   normalized = removeGeminiSuggestions(normalized);
