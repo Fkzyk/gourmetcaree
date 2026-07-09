@@ -145,6 +145,7 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 ## 募集条件（すかいらーく言及はここに統合する。独立した一文として浮かせない）
 
 直前の転職メッセージから以下へ自然につなげる。すかいらーくへの言及は募集条件の導入として書き、この位置以外では言及しない。
+「なお、」の前に空行を入れないこと。直前の転職メッセージの段落に改行のみで直接続け、同じ段落の一部として書く。
 
 なお、資さんは2024年からすかいらーくグループの一員となりました。
 待遇や制度もその安定した基盤の上で整えており、条件は以下のとおりです。
@@ -651,6 +652,9 @@ function cleanGeminiOutput(subject, body) {
     .trim();
 
   cleanBody = removeGeminiSuggestions(cleanBody);
+
+  // 「なお、資さんは…」(すかいらーく言及)の前の空行を詰めて前の段落に直接続ける
+  cleanBody = cleanBody.replace(/\n\s*\n(なお、資さん)/g, '\n$1');
 
   return { subject: cleanSubject, body: cleanBody };
 }
