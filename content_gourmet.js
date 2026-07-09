@@ -597,6 +597,95 @@ function hideStatus() {
   if (el) el.style.display = 'none';
 }
 
+// ═══════════════════════════════════════════════════════════
+// 2画面連携: プロフィール画面と スカウトメール入力画面 は別ページ。
+// プロフィール画面で全文を会員IDキーで chrome.storage.local に保存し、
+// スカウト画面では宛先IDで取り出してプロンプトに使う。
+// ═══════════════════════════════════════════════════════════
+
+// ── 現在のページがプロフィール画面なら会員IDを返す ──
+function getProfilePageMemberId() {
+  const m = location.pathname.match(/\/member\/detail\/index\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+// ── スカウト画面の宛先の会員IDを読み取る ──
+function getRecipientMemberId() {
+  // 宛先リンク <a href="/shop-pc/member/detail/index/94094">94094</a>
+  const link = [...document.querySelectorAll('a[href*="/member/detail/index/"]')]
+    .find(a => !a.closest('#scout-ext-panel'));
+  if (link) {
+    const m = (link.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+    if (m) return m[1];
+  }
+  // フォールバック: hidden input[name="memberIds"]
+  const hidden = document.querySelector('input[name="memberIds"]');
+  if (hidden && /\d+/.test(hidden.value || '')) return (hidden.value.match(/\d+/) || [null])[0];
+  return null;
+}
+
+// ── プロフィールをstorageへ保存 / 取得 ──
+function storeProfile(memberId, text) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ ['profile_' + memberId]: { text, savedAt: Date.now() } }, () => {
+      pruneOldProfiles();
+      resolve();
+    });
+  });
+}
+
+function getStoredProfile(memberId) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['profile_' + memberId], (data) => {
+      resolve(data['profile_' + memberId] || null);
+    });
+  });
+}
+
+// 保存件数が増えすぎないよう古いものから削除（100件まで保持）
+function pruneOldProfiles() {
+  chrome.storage.local.get(null, (all) => {
+    const keys = Object.keys(all).filter(k => k.startsWith('profile_'));
+    if (keys.length <= 100) return;
+    keys.sort((a, b) => (all[a].savedAt || 0) - (all[b].savedAt || 0));
+    chrome.storage.local.remove(keys.slice(0, keys.length - 100));
+  });
+}
+
+// ── プロフィール画面: ページ全文を自動保存 ──
+let profileSavedLength = 0;
+function saveProfileIfDetailPage() {
+  const memberId = getProfilePageMemberId();
+  if (!memberId) return;
+
+  const text = extractCandidateInfo();
+  // 描画途中の短すぎるテキストや、前回保存分と同じ長さならスキップ
+  if (!text || text.length < 200 || text.length === profileSavedLength) return;
+  profileSavedLength = text.length;
+
+  storeProfile(memberId, text).then(() => {
+    showProfileToast(`✓ プロフィール取得済み（ID: ${memberId}）`);
+  });
+}
+
+// プロフィール画面用の小さなトースト表示
+function showProfileToast(msg) {
+  let toast = document.getElementById('scout-profile-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'scout-profile-toast';
+    toast.style.cssText =
+      'position:fixed;bottom:16px;left:260px;z-index:99999;background:rgba(30,30,30,0.75);' +
+      'color:#fff;border-radius:10px;padding:6px 12px;font-size:11px;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  clearTimeout(showProfileToast._timer);
+  showProfileToast._timer = setTimeout(() => { toast.style.display = 'none'; }, 2500);
+}
+
 // ── パネルの初期化 ──
 function initPanel() {
   if (document.getElementById('scout-ext-panel')) return;
@@ -606,8 +695,28 @@ function initPanel() {
 
   getScoutCount().then(count => updateBadge(count));
 
-  document.getElementById('scoutGenerateBtn').addEventListener('click', () => {
-    const candidateInfo = extractCandidateInfo();
+  document.getElementById('scoutGenerateBtn').addEventListener('click', async () => {
+    let candidateInfo = '';
+
+    if (getProfilePageMemberId()) {
+      // プロフィール画面上で押された場合は従来どおりページから直接抽出
+      candidateInfo = extractCandidateInfo();
+    } else {
+      // スカウトメール入力画面: 宛先IDでstorageからプロフィールを取り出す
+      const memberId = getRecipientMemberId();
+      if (!memberId) {
+        showStatus('⚠ 宛先の会員IDが読み取れませんでした。', 'error');
+        return;
+      }
+      const profile = await getStoredProfile(memberId);
+      if (!profile || !profile.text) {
+        // 防波堤: プロフィール未取得のまま空のメールを生成させない
+        showStatus(`⚠ 候補者プロフィールが未取得です（ID: ${memberId}）。宛先のリンクをクリックしてプロフィール画面を一度開いてから、もう一度生成してください。`, 'warning');
+        return;
+      }
+      candidateInfo = profile.text;
+    }
+
     if (!candidateInfo.trim()) {
       showStatus('⚠ 候補者情報が取得できませんでした', 'error');
       return;
@@ -620,7 +729,6 @@ function initPanel() {
 
     chrome.runtime.sendMessage({
       action: 'openGemini',
-      candidateInfo: candidateInfo,
       prompt: fullPrompt
     });
   });
@@ -784,6 +892,9 @@ document.addEventListener('click', (e) => {
 
 // ── ページ読み込み完了後に初期化 ──
 function tryInit() {
+  // プロフィール画面ならページ全文を自動保存（何度呼ばれても差分がなければスキップ）
+  saveProfileIfDetailPage();
+
   if (document.getElementById('scout-ext-panel')) return;
   if (isScoutFormPresent()) initPanel();
 }
@@ -795,10 +906,13 @@ if (document.readyState === 'loading') {
   tryInit();
 }
 
-// DOM変化を監視（スカウトフォームの動的表示に対応）
+// 遅延描画の取りこぼし防止（プロフィール保存の再試行）
+setTimeout(tryInit, 1500);
+setTimeout(tryInit, 4000);
+
+// DOM変化を監視（スカウトフォームの動的表示・プロフィール遅延描画に対応）
 let debounceTimer = null;
 const observer = new MutationObserver(() => {
-  if (document.getElementById('scout-ext-panel')) return;
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(tryInit, 300);
 });
