@@ -1,11 +1,12 @@
+/* 画面左下・サイドメニューの右隣に配置（右下だとサイトの送信ボタンに被るため） */
 #scout-ext-panel {
   position: fixed;
-  bottom: 80px;
-  right: 80px;
+  bottom: 16px;
+  left: 260px;
   z-index: 99999;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 8px;
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
   font-size: 13px;
