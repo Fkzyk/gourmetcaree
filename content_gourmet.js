@@ -325,9 +325,7 @@ function createPanel() {
   panel.innerHTML = `
     <div id="scoutStatus" class="scout-status" style="display:none;"></div>
     <div class="scout-btn-wrapper">
-      <button class="scout-btn scout-btn-primary" id="scoutGenerateBtn">
-        ✨ Geminiでスカウトメール生成
-      </button>
+      <button class="scout-btn scout-btn-primary" id="scoutGenerateBtn"></button>
       <span id="scoutBadge" class="scout-badge" style="display:none;">0</span>
     </div>
   `;
