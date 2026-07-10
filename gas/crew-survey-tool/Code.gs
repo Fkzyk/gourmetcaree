@@ -48,6 +48,10 @@ var CONFIG = {
   // 進捗状況プルダウンの選択肢（学生版と同一）
   PROGRESS_OPTIONS: ['SMS送信済', '説明会日程調整中', '説明会済', '最終選考待ち', '内定', '内定承諾', '対象外'],
 
+  // 共有用ファイルに書き出すシート（従業員リスト等の個人情報はここに含めない）
+  SHARE_SHEETS: ['未提出者', '回答率_店舗別', '回答率_営業部別'],
+  SHARE_FILE_NAME: '【共有用】全クルーアンケート 集計結果',
+
   TOOL_TITLE: '全クルーアンケート'
 };
 
@@ -60,6 +64,7 @@ function onOpen() {
     .addItem('進捗確認シートを更新', 'syncProgressSheet')
     .addSeparator()
     .addItem('すべて更新', 'updateAll')
+    .addItem('共有用ファイルを出力（集計シートのみ）', 'exportShareFile')
     .addItem('初期セットアップ（不足シート作成）', 'setupSheets')
     .addToUi();
 }
@@ -428,7 +433,66 @@ function syncProgressSheet() {
   ss.toast(out.length + '件を転記しました（重複 ' + (values.length - 1 - out.length) + '件は最新のみ）', '進捗確認シート更新 完了', 10);
 }
 
-// ==================== 3. 初期セットアップ ====================
+// ==================== 3. 共有用ファイル出力 ====================
+
+/**
+ * CONFIG.SHARE_SHEETS のシートだけを別スプレッドシートに書き出す。
+ *
+ * Googleスプレッドシートには「シート単位のパスワード保護(閲覧制限)」機能が無く、
+ * シートの保護は編集を防ぐだけ・非表示はIMPORTRANGE等で閲覧可能なため、
+ * 見せたくないシート(従業員リスト等)がある場合は、見せたいシートだけを
+ * 別ファイルに出力してそちらを共有するのが安全な方法。
+ *
+ * - 初回実行時に共有用ファイルを自動作成(このファイルと同じフォルダ)
+ * - 2回目以降は同じファイルの中身を最新の集計で上書き(共有リンクは変わらない)
+ * - 出力は値のみ(数式や他シートへの参照は含まれない)
+ */
+function exportShareFile() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var props = PropertiesService.getDocumentProperties();
+
+  // 共有用ファイルを取得(無ければ作成)
+  var shareId = props.getProperty('SHARE_FILE_ID');
+  var shareSs = null;
+  if (shareId) {
+    try { shareSs = SpreadsheetApp.openById(shareId); } catch (e) { shareSs = null; }
+  }
+  if (!shareSs) {
+    shareSs = SpreadsheetApp.create(CONFIG.SHARE_FILE_NAME);
+    props.setProperty('SHARE_FILE_ID', shareSs.getId());
+    // 本体と同じフォルダに移動
+    var thisFile = DriveApp.getFileById(ss.getId());
+    var parents = thisFile.getParents();
+    if (parents.hasNext()) DriveApp.getFileById(shareSs.getId()).moveTo(parents.next());
+  }
+
+  // 既存シートを一旦リネーム(全削除はできないため)して新しいコピーを配置
+  var oldSheets = shareSs.getSheets();
+  oldSheets.forEach(function (sh, idx) { sh.setName('_削除予定_' + idx); });
+
+  CONFIG.SHARE_SHEETS.forEach(function (name) {
+    var src = ss.getSheetByName(name);
+    if (!src) return;
+    var copied = src.copyTo(shareSs).setName(name);
+    // 値のみに変換(本体への参照や数式を残さない)
+    var range = copied.getDataRange();
+    range.setValues(range.getValues());
+  });
+
+  // 古いシートを削除
+  shareSs.getSheets().forEach(function (sh) {
+    if (sh.getName().indexOf('_削除予定_') === 0) shareSs.deleteSheet(sh);
+  });
+
+  var url = shareSs.getUrl();
+  var ui = SpreadsheetApp.getUi();
+  ui.alert('共有用ファイルを出力しました',
+    '以下のファイルに「' + CONFIG.SHARE_SHEETS.join('」「') + '」のみを書き出しました。\n' +
+    '共有相手にはこちらのファイルだけを共有してください。\n\n' + url,
+    ui.ButtonSet.OK);
+}
+
+// ==================== 4. 初期セットアップ ====================
 
 function setupSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -521,7 +585,10 @@ function setupSheets() {
       ['   STEP1', 'メニュー「📝 ' + CONFIG.TOOL_TITLE + '」をクリック'],
       ['   STEP2', '「リストを更新する（未提出者抽出）」をクリック'],
       ['   STEP3', '「進捗確認シートを更新」をクリック(回答者の管理表を最新化)'],
-      ['   STEP4', '完了後、各シートで結果を確認']
+      ['   STEP4', '完了後、各シートで結果を確認'],
+      ['', ''],
+      ['5. 集計結果の共有', ''],
+      ['   共有用ファイル出力', 'メニュー「共有用ファイルを出力」で未提出者・回答率シートだけの別ファイルを作成。個人情報を含むシートを見せずに共有したい場合はこのファイルを共有する(シート単位のパスワード保護はスプレッドシートには無いため)']
     ];
     mn.getRange(1, 1, manual.length, 2).setValues(manual);
     mn.getRange('A1').setFontWeight('bold').setFontSize(14);
