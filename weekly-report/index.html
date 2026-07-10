@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>業務週報メーカー</title>
+<style>
+  :root {
+    --line: #333;
+    --thin: #999;
+    --bg: #f0f2f5;
+    --accent: #2b6cb0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Noto Sans CJK JP", "Noto Sans JP", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+    background: var(--bg);
+    color: #222;
+  }
+
+  /* ---------- ツールバー ---------- */
+  .toolbar {
+    position: sticky; top: 0; z-index: 10;
+    background: #fff; border-bottom: 1px solid #ddd;
+    padding: 8px 14px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  }
+  .toolbar h1 { font-size: 15px; margin: 0 12px 0 0; }
+  .toolbar label { font-size: 12px; color: #555; display: flex; align-items: center; gap: 4px; }
+  .toolbar input[type="date"], .toolbar input[type="text"] {
+    font-size: 13px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 4px;
+  }
+  button {
+    font-size: 12.5px; padding: 5px 10px; border: 1px solid #ccc; border-radius: 5px;
+    background: #fff; cursor: pointer;
+  }
+  button:hover { background: #f4f6f8; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #235a94; }
+  .spacer { flex: 1; }
+  #saveState { font-size: 11px; color: #999; }
+  #fitWarn { font-size: 11.5px; color: #c05621; background: #fffaf0; border: 1px solid #f6ad55; border-radius: 4px; padding: 2px 8px; display: none; }
+
+  /* ---------- 取込パネル ---------- */
+  .intake {
+    max-width: 860px; margin: 12px auto 0; background: #fff;
+    border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px;
+    display: none;
+  }
+  .intake.open { display: block; }
+  .intake h2 { font-size: 13.5px; margin: 0 0 8px; }
+  .intake textarea {
+    width: 100%; min-height: 180px; font-size: 13px; line-height: 1.6;
+    padding: 8px; border: 1px solid #ccc; border-radius: 5px; font-family: inherit;
+  }
+  .intake .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; font-size: 12.5px; }
+  .intake .row label { display: flex; align-items: center; gap: 4px; color: #444; }
+  .intake input[type="text"] { font-size: 12.5px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 4px; width: 90px; }
+  .intake .hint { font-size: 11.5px; color: #888; margin-top: 6px; }
+  .intake .sel-buttons { display: flex; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: #555; flex-wrap: wrap; }
+
+  /* ---------- 週報シート ---------- */
+  .sheet-wrap { display: flex; justify-content: center; padding: 14px 8px 60px; }
+  .sheet {
+    width: 194mm; min-height: 275mm; background: #fff;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12);
+    padding: 7mm 8mm;
+    font-size: 10.5px; line-height: 1.35;
+  }
+  .sheet-head { display: flex; align-items: flex-end; gap: 10px; }
+  .sheet-head .title { font-size: 15px; font-weight: 700; letter-spacing: .05em; }
+  .sheet-head .deadline { font-size: 9.5px; color: #444; margin-left: auto; align-self: center; }
+  .name-box { display: flex; border: 1.2px solid var(--line); }
+  .name-box .nlabel { padding: 3px 8px; border-right: 1.2px solid var(--line); background: #eee; font-size: 10px; display: flex; align-items: center; }
+  .name-box .nvalue { padding: 3px 10px; min-width: 100px; font-size: 12px; font-weight: 600; }
+
+  .sec-title { font-weight: 700; font-size: 11px; margin: 8px 0 2px; }
+  .sec-title:first-of-type { margin-top: 10px; }
+  .sec-note { font-weight: 400; font-size: 9px; color: #555; }
+
+  table.days { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.days th, table.days td { border: 1px solid var(--line); padding: 2px 4px; vertical-align: middle; }
+  table.days th { background: #eee; font-weight: 600; font-size: 9.5px; text-align: center; }
+  table.days col.c-date { width: 13mm; }
+  table.days col.c-dow  { width: 9mm; }
+  table.days col.c-time { width: 15mm; }
+  table.days col.c-hour { width: 11mm; }
+  table.days col.c-place{ width: 26mm; }
+  table.days td.center { text-align: center; }
+  table.days td.date, table.days td.dow { text-align: center; background: #fafafa; }
+  table.days tr.total td { border: none; }
+  table.days tr.total td.tlabel { text-align: right; padding-right: 6px; font-size: 9.5px; color: #444; border: none; }
+  table.days tr.total td.tval { border: 1px solid var(--line); text-align: center; font-weight: 700; background: #f5f5f5; }
+
+  table.list { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.list td { border: 1px solid var(--line); padding: 2px 5px; vertical-align: top; }
+  table.list col.c-mark { width: 9mm; }
+  table.list td.mark { text-align: center; background: #fafafa; }
+
+  .free-box { border: 1px solid var(--line); min-height: 16mm; padding: 3px 5px; }
+
+  .ce { min-height: 1.35em; white-space: pre-wrap; word-break: break-all; outline: none; }
+  .ce:focus { background: #eef6ff; }
+  .ce:empty::before { content: attr(data-ph); color: #bbb; }
+  td .ce { min-height: 1.35em; }
+
+  .dow-sat { color: #1a56b0; }
+  .dow-sun { color: #c00; }
+
+  /* ---------- 印刷 ---------- */
+  @page { size: A4 portrait; margin: 8mm; }
+  @media print {
+    body { background: #fff; }
+    .toolbar, .intake, #fitWarn { display: none !important; }
+    .sheet-wrap { padding: 0; display: block; }
+    .sheet { width: auto; min-height: 0; box-shadow: none; padding: 0; }
+    .ce:empty::before { content: ""; }
+    .ce:focus { background: transparent; }
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <h1>業務週報メーカー</h1>
+  <label>対象週（先週の月曜）
+    <input type="date" id="weekStart">
+  </label>
+  <label>氏名
+    <input type="text" id="nameInput" size="10">
+  </label>
+  <button id="toggleIntake">📋 記録テキストから作成</button>
+  <button id="sampleBtn">サンプル</button>
+  <button id="exportBtn" title="入力内容をJSONファイルに保存">書き出し</button>
+  <button id="importBtn" title="JSONファイルから復元">読み込み</button>
+  <input type="file" id="importFile" accept=".json" hidden>
+  <button id="clearBtn">全てクリア</button>
+  <div class="spacer"></div>
+  <span id="fitWarn">⚠ 内容が多くA4 1枚に収まらない可能性があります</span>
+  <span id="saveState"></span>
+  <button class="primary" id="printBtn">🖨 PDFに保存（印刷）</button>
+</div>
+
+<div class="intake" id="intakePanel">
+  <h2>毎日の記録テキストを貼り付け → 解析して表に反映</h2>
+  <textarea id="intakeText" placeholder="例）
+月
+新入社員 入社式 予行演習実施のあと本番 滞りなく
+書類記入 オリエンテーション
+火
+引継ぎ詳細
+…（「月」「火」など曜日だけの行で区切ってください。7/7(月) の形式もOK）"></textarea>
+  <div class="row">
+    <span>反映先:</span>
+    <label><input type="radio" name="target" value="lastWeek" checked> 先週行動結果</label>
+    <label><input type="radio" name="target" value="thisWeek"> 今週行動予定</label>
+    <span style="margin-left:12px">既定の勤務時間:</span><input type="text" id="defTime" value="9-18">
+    <span>既定の勤務場所:</span><input type="text" id="defPlace" value="資さん本社" style="width:130px">
+    <label><input type="checkbox" id="optSep" checked> 全角スペース区切りを「 / 」に変換</label>
+    <button class="primary" id="parseBtn">解析して反映</button>
+  </div>
+  <div class="sel-buttons">
+    テキストを選択して追加:
+    <button data-sec="results">→ 成果へ</button>
+    <button data-sec="observations">→ 観察へ</button>
+    <button data-sec="analyses">→ 分析へ</button>
+    <button data-sec="others">→ その他へ</button>
+  </div>
+  <div class="hint">・「時間」は勤務時間（例: 9-18）から自動計算します（7時間以上は休憩1時間を控除）。表の各セルは直接編集できます。</div>
+</div>
+
+<div class="sheet-wrap">
+<div class="sheet" id="sheet">
+
+  <div class="sheet-head">
+    <div class="title">業務週報(人事部用)</div>
+    <div class="deadline">＊毎週月曜日24時までに報告</div>
+    <div class="name-box"><div class="nlabel">氏名</div><div class="nvalue" id="nameDisp"></div></div>
+  </div>
+
+  <div class="sec-title">先週行動結果</div>
+  <table class="days" id="lastWeekTable">
+    <colgroup><col class="c-date"><col class="c-dow"><col class="c-time"><col class="c-hour"><col class="c-place"><col></colgroup>
+    <thead><tr><th>月/日</th><th>曜日</th><th>勤務時間</th><th>時間</th><th>勤務場所</th><th>職務内容</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="sec-title">先週の成果/成果物</div>
+  <table class="list" id="resultsTable">
+    <colgroup><col class="c-mark"><col></colgroup><tbody></tbody>
+  </table>
+
+  <div class="sec-title">観察 <span class="sec-note">（問題発見・課題・違和感・不思議なこと・気づきなど）</span></div>
+  <table class="list" id="observationsTable">
+    <colgroup><col class="c-mark"><col></colgroup><tbody></tbody>
+  </table>
+
+  <div class="sec-title">分析 <span class="sec-note">（観察で記載した原因の特定/写真撮り/計測など）　*原因特定できない場合は、推測を記載する</span></div>
+  <table class="list" id="analysesTable">
+    <colgroup><col class="c-mark"><col></colgroup><tbody></tbody>
+  </table>
+
+  <div class="sec-title">その他 <span class="sec-note">（相談事項・分からないこと・認識を合わせたいこと・疑問点など）</span></div>
+  <table class="list" id="othersTable">
+    <colgroup><col class="c-mark"><col></colgroup><tbody></tbody>
+  </table>
+
+  <div class="sec-title">今週行動予定</div>
+  <table class="days" id="thisWeekTable">
+    <colgroup><col class="c-date"><col class="c-dow"><col class="c-time"><col class="c-hour"><col class="c-place"><col></colgroup>
+    <thead><tr><th>月/日</th><th>曜日</th><th>勤務時間</th><th>時間</th><th>勤務場所</th><th>職務内容</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="sec-title">ﾌﾘｰﾗｲﾃｨﾝｸﾞ</div>
+  <div class="free-box"><div class="ce" id="freeBox" contenteditable="true" data-ph="自由記述"></div></div>
+
+</div>
+</div>
+
+<script>
+'use strict';
+
+const DOWS = ['月','火','水','木','金','土','日'];
+const STORAGE_KEY = 'weekly-report-state-v1';
+const MARKS = { results: ['①','②','③','④','⑤'], observations: ['a)','b)','c)','d)','e)'],
+                analyses: ['a)','b)','c)','d)','e)'], others: ['・','・','・','・','・'] };
+
+function blankDay() { return { time: '', hours: '', place: '', work: '' }; }
+function defaultState() {
+  return {
+    name: '',
+    weekStart: mondayOf(addDays(new Date(), -7)).toISOString().slice(0, 10),
+    lastWeek: Array.from({ length: 7 }, blankDay),
+    thisWeek: Array.from({ length: 7 }, blankDay),
+    results: ['', '', '', '', ''],
+    observations: ['', '', '', '', ''],
+    analyses: ['', '', '', '', ''],
+    others: ['', '', '', '', ''],
+    free: ''
+  };
+}
+let state = defaultState();
+
+/* ---------- 日付ユーティリティ ---------- */
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function mondayOf(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const shift = (x.getDay() + 6) % 7; // 月=0
+  x.setDate(x.getDate() - shift);
+  x.setMinutes(-x.getTimezoneOffset()); // toISOString対策
+  return x;
+}
+function parseISO(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
+function fmtMD(d) { return (d.getMonth() + 1) + '/' + d.getDate(); }
+
+/* ---------- 時間計算 ---------- */
+function calcHours(timeStr) {
+  const m = String(timeStr).trim().match(/^(\d{1,2})(?::(\d{2}))?\s*[-〜~ー]\s*(\d{1,2})(?::(\d{2}))?$/);
+  if (!m) return '';
+  const start = Number(m[1]) + Number(m[2] || 0) / 60;
+  const end = Number(m[3]) + Number(m[4] || 0) / 60;
+  let dur = end - start;
+  if (dur <= 0) return '';
+  if (dur >= 7) dur -= 1; // 休憩1時間控除
+  return (Math.round(dur * 10) / 10).toFixed(1);
+}
+
+/* ---------- シート構築 ---------- */
+function buildDaysTable(tableId, weekKey) {
+  const tbody = document.querySelector('#' + tableId + ' tbody');
+  tbody.innerHTML = '';
+  for (let i = 0; i < 7; i++) {
+    const tr = document.createElement('tr');
+    const dowCls = i === 5 ? 'dow-sat' : i === 6 ? 'dow-sun' : '';
+    tr.innerHTML =
+      '<td class="date" data-datecell="' + weekKey + '.' + i + '"></td>' +
+      '<td class="dow ' + dowCls + '">' + DOWS[i] + '</td>' +
+      '<td class="center"><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.time"></div></td>' +
+      '<td class="center"><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.hours"></div></td>' +
+      '<td><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.place"></div></td>' +
+      '<td><div class="ce" contenteditable="plaintext-only" data-bind="' + weekKey + '.' + i + '.work"></div></td>';
+    tbody.appendChild(tr);
+  }
+  const tr = document.createElement('tr');
+  tr.className = 'total';
+  tr.innerHTML = '<td></td><td></td><td class="tlabel">合計</td><td class="tval" data-total="' + weekKey + '"></td><td></td><td></td>';
+  tbody.appendChild(tr);
+}
+
+function buildListTable(tableId, secKey) {
+  const tbody = document.querySelector('#' + tableId + ' tbody');
+  tbody.innerHTML = '';
+  MARKS[secKey].forEach((mark, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mark">' + mark + '</td>' +
+      '<td><div class="ce" contenteditable="plaintext-only" data-bind="' + secKey + '.' + i + '"></div></td>';
+    tbody.appendChild(tr);
+  });
+}
+
+/* ---------- state <-> DOM ---------- */
+function getByPath(path) {
+  return path.split('.').reduce((o, k) => o[k], state);
+}
+function setByPath(path, v) {
+  const ks = path.split('.');
+  const last = ks.pop();
+  ks.reduce((o, k) => o[k], state)[last] = v;
+}
+
+function renderAll() {
+  document.getElementById('weekStart').value = state.weekStart;
+  document.getElementById('nameInput').value = state.name;
+  document.getElementById('nameDisp').textContent = state.name;
+  document.querySelectorAll('.ce[data-bind]').forEach(el => {
+    const v = getByPath(el.dataset.bind);
+    if (el.innerText.replace(/\n$/, '') !== v) el.innerText = v;
+  });
+  document.getElementById('freeBox').innerText = state.free;
+  renderDates();
+  renderTotals();
+  checkFit();
+}
+
+function renderDates() {
+  const base = parseISO(state.weekStart);
+  document.querySelectorAll('[data-datecell]').forEach(el => {
+    const [wk, i] = el.dataset.datecell.split('.');
+    const offset = (wk === 'thisWeek' ? 7 : 0) + Number(i);
+    el.textContent = fmtMD(addDays(base, offset));
+  });
+}
+
+function renderTotals() {
+  ['lastWeek', 'thisWeek'].forEach(wk => {
+    const sum = state[wk].reduce((s, d) => s + (parseFloat(d.hours) || 0), 0);
+    document.querySelector('[data-total="' + wk + '"]').textContent =
+      sum ? (Math.round(sum * 10) / 10) : '';
+  });
+}
+
+/* ---------- 保存 ---------- */
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  document.getElementById('saveState').textContent = '…';
+  saveTimer = setTimeout(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    document.getElementById('saveState').textContent = '自動保存済み';
+  }, 400);
+}
+
+/* ---------- 1枚判定 ---------- */
+function checkFit() {
+  const sheet = document.getElementById('sheet');
+  // A4印刷可能領域(余白8mm)の概算 281mm ≒ 1062px @96dpi
+  const limit = 1062;
+  document.getElementById('fitWarn').style.display =
+    sheet.scrollHeight > limit + 40 ? 'inline-block' : 'none';
+}
+
+/* ---------- テキスト解析 ---------- */
+function parseDaily(text, opts) {
+  const buckets = Array.from({ length: 7 }, () => []);
+  let cur = -1;
+  const idx = { 月: 0, 火: 1, 水: 2, 木: 3, 金: 4, 土: 5, 日: 6 };
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    let m = line.match(/^([月火水木金土日])\s*(曜日?)?\s*[:：]?$/);
+    if (!m) m = line.match(/^\d{1,2}\/\d{1,2}\s*[（(]\s*([月火水木金土日])\s*[)）]\s*[:：]?$/);
+    if (m) { cur = idx[m[1]]; continue; }
+    if (cur < 0) continue;
+    let content = line;
+    if (opts.sep) content = content.replace(/[　\t]+/g, ' / ').replace(/\s{2,}/g, ' / ');
+    buckets[cur].push(content);
+  }
+  return buckets.map(lines => lines.join('\n'));
+}
+
+function applyParsed(weekKey, parsed, defTime, defPlace) {
+  parsed.forEach((work, i) => {
+    if (!work) return;
+    const day = state[weekKey][i];
+    day.work = work;
+    if (!day.time) day.time = defTime;
+    if (!day.place) day.place = defPlace;
+    if (!day.hours) day.hours = calcHours(day.time);
+  });
+  renderAll();
+  scheduleSave();
+}
+
+/* ---------- イベント ---------- */
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (el.classList && el.classList.contains('ce') && el.dataset.bind) {
+    const path = el.dataset.bind;
+    setByPath(path, el.innerText.replace(/\n$/, ''));
+    if (/\.time$/.test(path)) {
+      const hoursPath = path.replace(/\.time$/, '.hours');
+      const auto = calcHours(getByPath(path));
+      if (auto) {
+        setByPath(hoursPath, auto);
+        const hEl = document.querySelector('.ce[data-bind="' + hoursPath + '"]');
+        if (hEl) hEl.innerText = auto;
+      }
+    }
+    if (/\.hours$/.test(path) || /\.time$/.test(path)) renderTotals();
+    checkFit();
+    scheduleSave();
+  }
+});
+
+document.getElementById('freeBox').addEventListener('input', e => {
+  state.free = e.target.innerText.replace(/\n$/, '');
+  checkFit();
+  scheduleSave();
+});
+
+document.getElementById('weekStart').addEventListener('change', e => {
+  if (!e.target.value) return;
+  const snapped = mondayOf(parseISO(e.target.value)).toISOString().slice(0, 10);
+  state.weekStart = snapped;
+  e.target.value = snapped;
+  renderDates();
+  scheduleSave();
+});
+
+document.getElementById('nameInput').addEventListener('input', e => {
+  state.name = e.target.value;
+  document.getElementById('nameDisp').textContent = state.name;
+  scheduleSave();
+});
+
+document.getElementById('toggleIntake').addEventListener('click', () => {
+  document.getElementById('intakePanel').classList.toggle('open');
+});
+
+document.getElementById('parseBtn').addEventListener('click', () => {
+  const text = document.getElementById('intakeText').value;
+  if (!text.trim()) { alert('記録テキストを貼り付けてください'); return; }
+  const target = document.querySelector('input[name="target"]:checked').value;
+  const parsed = parseDaily(text, { sep: document.getElementById('optSep').checked });
+  if (parsed.every(v => !v)) {
+    alert('曜日の行（「月」「火」…または 7/7(月) 形式）が見つかりませんでした');
+    return;
+  }
+  applyParsed(target, parsed,
+    document.getElementById('defTime').value.trim(),
+    document.getElementById('defPlace').value.trim());
+});
+
+document.querySelectorAll('.sel-buttons button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const ta = document.getElementById('intakeText');
+    const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd).trim();
+    if (!sel) { alert('テキストエリア内で追加したい部分を選択してください'); return; }
+    const sec = btn.dataset.sec;
+    const slot = state[sec].findIndex(v => !v);
+    if (slot < 0) { alert('空き行がありません'); return; }
+    state[sec][slot] = sel.replace(/\n+/g, ' ');
+    renderAll();
+    scheduleSave();
+  });
+});
+
+document.getElementById('printBtn').addEventListener('click', () => window.print());
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  if (!confirm('入力内容を全てクリアしますか？（氏名・対象週は残ります）')) return;
+  const keep = { name: state.name, weekStart: state.weekStart };
+  state = Object.assign(defaultState(), keep);
+  renderAll();
+  scheduleSave();
+});
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '業務週報_' + state.weekStart.replace(/-/g, '') + (state.name ? '_' + state.name.replace(/[\s　]/g, '') : '') + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById('importBtn').addEventListener('click', () => document.getElementById('importFile').click());
+document.getElementById('importFile').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  f.text().then(t => {
+    try {
+      state = Object.assign(defaultState(), JSON.parse(t));
+      renderAll();
+      scheduleSave();
+    } catch (err) { alert('JSONの読み込みに失敗しました'); }
+  });
+  e.target.value = '';
+});
+
+const SAMPLE = `月
+新入社員　入社式　予行演習実施のあと本番　滞りなく
+書類記入　オリエンテーション　クルー採用の打ち手まとめ　クオレガ電話打ち合わせ
+火
+引継ぎ詳細
+クルー採用の打ち手まとめ　各個店の特徴ペルソナ設定のあと各々の打ち手を
+水
+クルー採用の打ち手まとめ　個別具体をアナログで情報を集めるしかないみたい
+一定の指標にはなるのかなと思ったが、、　最終求人票見直し修正依頼完了済み
+木
+グルメキャリー52件スカウト送信
+金
+愛知県、京都府で1件ずつ通常応募あり　愛知は経験者であるが54歳なのが残念でもなんとか面接はしたい
+グルメキャリースカウト10件
+フーズラボ最終変更へ担当へ依頼
+インナーアンケート　営業部へ進捗共有用の資料作成　地味に時間がとられる
+グルメキャリー開封率チェックが楽にできる仕組みを作った。継続して確認していく。`;
+
+document.getElementById('sampleBtn').addEventListener('click', () => {
+  document.getElementById('intakePanel').classList.add('open');
+  document.getElementById('intakeText').value = SAMPLE;
+});
+
+/* ---------- 起動 ---------- */
+function boot() {
+  buildDaysTable('lastWeekTable', 'lastWeek');
+  buildListTable('resultsTable', 'results');
+  buildListTable('observationsTable', 'observations');
+  buildListTable('analysesTable', 'analyses');
+  buildListTable('othersTable', 'others');
+  buildDaysTable('thisWeekTable', 'thisWeek');
+
+  // URLハッシュ #d=<base64(JSON)> から復元（共有・自動生成用）
+  if (location.hash.startsWith('#d=')) {
+    try {
+      const json = decodeURIComponent(escape(atob(location.hash.slice(3).replace(/-/g, '+').replace(/_/g, '/'))));
+      state = Object.assign(defaultState(), JSON.parse(json));
+      renderAll();
+      return;
+    } catch (e) { console.warn('hash import failed', e); }
+  }
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    try { state = Object.assign(defaultState(), JSON.parse(saved)); } catch (e) {}
+  }
+  renderAll();
+}
+boot();
+</script>
+</body>
+</html>
