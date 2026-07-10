@@ -128,10 +128,9 @@ function updateLists() {
     var name = String(row[col.name] || '').trim();
     var person = { no: no, name: name, age: age, storeNo: storeNo, storeName: store.storeName, division: store.division };
 
-    // 外国籍判定: 外国人フラグ(=1)を優先し、フラグ列が無い場合はカタカナのみ氏名で推定
-    var isForeign = foreignCol !== null
-      ? String(row[foreignCol]).trim() === '1'
-      : isKatakanaOnly_(name);
+    // 外国籍判定: 外国人フラグ(=1)またはカタカナのみ氏名のどちらかに該当すれば除外
+    // (フラグの登録漏れがあってもカタカナ氏名なら確実に未提出者から外すため両方で判定)
+    var isForeign = (foreignCol !== null && String(row[foreignCol]).trim() === '1') || isKatakanaOnly_(name);
     if (isForeign) { // 妥当性確認用リストへ出し対象から除外
       foreigners.push(person);
       continue;
