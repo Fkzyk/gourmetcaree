@@ -29,13 +29,17 @@
   if (window.__gcOpenRateCheckerLoaded) return;
   window.__gcOpenRateCheckerLoaded = true;
 
-  // スカウトメール一覧ページ以外では何もしない
-  if (!/\/scoutMail\/list/.test(location.pathname)) return;
+  // メールBOXの一覧ページ以外では何もしない
+  // （スカウトメール /scoutMail/list のほか、応募メール等の各タブも
+  //   URLが「〜Mail/list」の形なら同じ仕組みで集計できる）
+  if (!/Mail\/list/.test(location.pathname)) return;
 
   // ── 設定 ──────────────────────────────────────────────
   const MAX_PAGES = 300;        // 暴走防止の上限ページ数
   const FETCH_DELAY_MS = 300;   // サーバー負荷軽減のためのページ間ウェイト
-  const PAGE_URL = (n) => `${location.origin}/shop-pc/scoutMail/list/changePage/${n}`;
+  // いま表示中のタブ（スカウト/応募など）の一覧をそのまま巡回する
+  const LIST_BASE = location.pathname.replace(/\/changePage\/\d+.*$/, '');
+  const PAGE_URL = (n) => `${location.origin}${LIST_BASE}/changePage/${n}`;
   const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
   // ============================================================
