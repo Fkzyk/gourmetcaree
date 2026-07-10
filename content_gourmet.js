@@ -40,13 +40,14 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 - 類型C（関西）: 大阪、京都、兵庫、奈良、滋賀、和歌山のいずれかを含む
 - 類型D（その他・全国）: 上記以外の地域のみ、「全国」等の記載、または判定不能
 
-複数エリアにまたがる場合: 東海を1つでも含むなら類型A。含まない場合は、希望勤務地の記載順で先頭のエリアに従う。
+複数エリアにまたがる場合: 東海を1つでも含むなら類型A。含まない場合は、記載されたエリアのうち類型BまたはCに該当する最初のエリアに従う。記載のどのエリアもA・B・Cに該当しない場合のみ類型Dとする（例: 希望勤務地が北海道と東京なら、北海道は該当しないため東京で類型B）。
 
 ## 判定2: 情報量レベル
 
 - レベル濃: 職務経歴の仕事内容に具体的な業務記述があり、マネジメント経験・店舗数・数値などの手がかりが読み取れる
 - レベル中: 職務経歴はあるが業務記述が簡素、または「キャリアを伝える」欄のみに具体的な記述がある
 - レベル薄: 業態・経験年数程度しか分からない
+- 異業種型: 飲食の職務経歴が無い、または短期のみである一方、非飲食の職務経歴に具体的な業務記述がある。該当する場合、情報量レベルに関わらず候補者評価は異業種型の書き方を使う
 
 ## 判定3: 追加フラグ
 
@@ -82,11 +83,11 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 
 挨拶の直後、会社紹介より前に、候補者アンカー文を1〜2文生成して入れる。ルールは以下。
 
-- 素材は候補者情報に文字として記載されている語のみ（会社名、業態、職種、仕事内容の記述、飲食店経験年数、「キャリアを伝える」欄の記述）
+- 素材は候補者情報に文字として記載されている語のみ（会社名、業態、職種、仕事内容の記述、飲食店経験年数、取得資格、学歴の学校名、「キャリアを伝える」欄の記述。非飲食の職務経歴の記載業務も使ってよい）
 - 記載されていない実績・役職・評価・人柄を書かない。「輝かしい」「豊富な」等の形容も足さない
 - 型の例: 「{{記載の業態・会社}}での{{記載の職務}}から{{記載の別の経験}}まで、{{経験年数}}歩んでこられたご経歴を拝見し、ご連絡しました。」
 - 「拝見」という語を本文で使えるのはこのアンカー文の1回まで（署名の定型文は数えない）
-- レベル薄の場合: 「飲食店経験{{年数}}というご経歴を拝見し、ご連絡しました。」とだけ書く。経験年数の記載もない場合はアンカー文自体を省略し、そのまま次の会社紹介へ進む
+- レベル薄の場合: 記載がある項目を優先順位（飲食店経験年数 → 経験業態 → 希望業態 → 希望職種 → 希望勤務地または住所のエリア）の上位から2つ使って書く。型の例: 「飲食店経験{{年数}}、{{希望業態}}をご希望というご登録内容を拝見し、ご連絡しました。」全項目が空欄の場合のみアンカー文を省略し、そのまま次の会社紹介へ進む
 
 続けて、類型に応じて以下の確定文をそのまま使う（語尾・敬体を変えない）。
 
@@ -118,18 +119,25 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 
 ## 候補者評価（情報量レベルで書き分ける）
 
-書き出しの決まり文句を使わない。候補者情報に記載された具体的な事実（会社名・業態・年数・業務内容）を先に名指しし、その後に古川の短い実感を一言だけ添える。感想が先で事実が後、という順にしない。
+経歴の要約・再陳述をしない。「〜を担い、〜に勤務されていました」のように、本人が知っている経歴を説明し返す文は書かない。事実には反応の形で触れる。その経歴のどこに引っかかったか、何を聞きたくなったかを書く。
+
+「キャリアを伝える」欄からの引用は語の借用までとする。本人の文章を言い換えてなぞらない。「学んだ」「身に付けた」等の本人の自己評価は、事実としてなぞらず、直接聞きたい対象として扱う。
+
+実感・賞賛の文は1文まで。「まさに」「こそが」等の強調語を重ねない。書き出しの決まり文句を使わない。感想が先で事実が後、という順にしない。このブロックの素材は経験系（年数・業態・職務内容・資格・学歴）に限り、希望勤務地・希望雇用形態は使わない。冒頭のアンカー文で使った素材の組み合わせをそのまま繰り返さない。
 
 禁止句（メール全体で使用禁止）: 「目に留まりました」「魅力を感じました」「感銘を受けました」「拝見したときに」
 
 レベル濃:
-職務経歴の具体的な業務内容・マネジメント範囲・数値実績を素材に、事実→実感の順で書く。型の例: 「{{会社・業態}}で{{年数}}、{{記載の業務}}。{{事実から自然に言える一言の実感}}と思いました。」結びは、こうした経験が資さんうどんの成長に必要な力だという趣旨につなげる。
+職務経歴の具体的な業務内容・マネジメント範囲・数値実績を素材に、経歴への反応として書く。型の例: 「{{会社や業態}}で{{記載の業務}}、{{別の記載の経歴}}。{{数値等の事実}}という記載もありましたが、{{この経歴の流れについて引っかかった点・直接聞きたい点}}のほうが気になりました。」
 
 レベル中:
 「キャリアを伝える」欄の記述や経験業態・経験年数を素材に、同じ事実→実感の順で書く。読み取れない実績を推測で補わない。
 
 レベル薄:
-経験年数と業態のみに触れる。誇張せず、「ご登録内容だけでは分からない部分も多いのですが、だからこそ直接お話を伺いたい」という趣旨の正直な書き方に切り替える。
+記載がある事実（経験年数・業態・資格）に必ず触れた上で、詳細が分からない部分は正直に書く。型の例: 「{{経験年数}}を{{記載の業態や資格の領域}}で重ねてこられた中身を、ご登録内容だけで判断するのは失礼だと思っています。だからこそ直接お話を伺いたいです。」誇張しない。「ご登録内容だけでは分からない」という断りだけで終わらせない。
+
+異業種型:
+取得資格・学歴で食の土台に触れ、非飲食の職務経歴に記載された管理・運営系の業務（教育、面接、ルート計画、クレーム対応、シフトや点呼等）を引用し、人と現場を回してきた経験は店舗運営に通じる、という趣旨で書く。飲食の実務が長いかのような書き方をしない。
 
 ## 職務とキャリアパス
 
@@ -225,9 +233,13 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 - パティシエ → 調理・盛り付けの丁寧さに強み
 - デザート開発 → 商品開発（うどん・丼・定食領域に応用）
 - 旅館・ホテルの和食調理 → 出汁や仕込みを含む調理の土台、衛生管理の経験
+- 配送・物流の現場経験 → ルート計画・仕分けの段取り力、新人教育・クレーム対応など人と現場を回す経験（店舗運営に通じる）
+- 調理師免許・調理系の学歴（実務が短い場合） → 食の土台。実務経験として誇張しない
 
 # 重要なルール
 
+- すべてのメールで、候補者情報に記載された事実への言及を最低2箇所入れる。素材の優先順位は、飲食店経験年数 → 経験業態 → 取得資格・学歴（調理系） → 非飲食職歴の記載業務 → 希望業態 → 希望職種 → 希望勤務地または住所のエリア → 就業区分。記載のある項目を優先順位の上位から使う。全項目が空欄の場合のみ例外とする
+- 「飲食店経験年数」の欄と職務経歴の飲食記述が明らかに食い違う場合（例: 年数欄は長いが職歴上の飲食実務は短期のみ）、年数を断定形で使わない。取得資格・学歴・職務経歴の記載を優先して書く
 - 候補者に関する生成文（冒頭のアンカー文、各ブロックの接続文、候補者評価、面接招待の1文目）の素材は、候補者情報に文字として記載されている内容に限る。記載から推測した実績・スキル・人柄・意欲を事実として書かない。書いてよいか迷った内容は書かない
 - 同じ経歴の語（会社名・業務名）をメール全体で3回以上繰り返さない。各ブロックで使う語は変える
 - 年齢・性別を件名・本文に一切出力しない。年齢・性別への言及、示唆（「お若い」「30代で」等）も禁止する。これらは内部判定の参考にのみ使用する
@@ -596,6 +608,95 @@ function hideStatus() {
   if (el) el.style.display = 'none';
 }
 
+// ═══════════════════════════════════════════════════════════
+// 2画面連携: プロフィール画面と スカウトメール入力画面 は別ページ。
+// プロフィール画面で全文を会員IDキーで chrome.storage.local に保存し、
+// スカウト画面では宛先IDで取り出してプロンプトに使う。
+// ═══════════════════════════════════════════════════════════
+
+// ── 現在のページがプロフィール画面なら会員IDを返す ──
+function getProfilePageMemberId() {
+  const m = location.pathname.match(/\/member\/detail\/index\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+// ── スカウト画面の宛先の会員IDを読み取る ──
+function getRecipientMemberId() {
+  // 宛先リンク <a href="/shop-pc/member/detail/index/94094">94094</a>
+  const link = [...document.querySelectorAll('a[href*="/member/detail/index/"]')]
+    .find(a => !a.closest('#scout-ext-panel'));
+  if (link) {
+    const m = (link.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+    if (m) return m[1];
+  }
+  // フォールバック: hidden input[name="memberIds"]
+  const hidden = document.querySelector('input[name="memberIds"]');
+  if (hidden && /\d+/.test(hidden.value || '')) return (hidden.value.match(/\d+/) || [null])[0];
+  return null;
+}
+
+// ── プロフィールをstorageへ保存 / 取得 ──
+function storeProfile(memberId, text) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ ['profile_' + memberId]: { text, savedAt: Date.now() } }, () => {
+      pruneOldProfiles();
+      resolve();
+    });
+  });
+}
+
+function getStoredProfile(memberId) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['profile_' + memberId], (data) => {
+      resolve(data['profile_' + memberId] || null);
+    });
+  });
+}
+
+// 保存件数が増えすぎないよう古いものから削除（100件まで保持）
+function pruneOldProfiles() {
+  chrome.storage.local.get(null, (all) => {
+    const keys = Object.keys(all).filter(k => k.startsWith('profile_'));
+    if (keys.length <= 100) return;
+    keys.sort((a, b) => (all[a].savedAt || 0) - (all[b].savedAt || 0));
+    chrome.storage.local.remove(keys.slice(0, keys.length - 100));
+  });
+}
+
+// ── プロフィール画面: ページ全文を自動保存 ──
+let profileSavedLength = 0;
+function saveProfileIfDetailPage() {
+  const memberId = getProfilePageMemberId();
+  if (!memberId) return;
+
+  const text = extractCandidateInfo();
+  // 描画途中の短すぎるテキストや、前回保存分と同じ長さならスキップ
+  if (!text || text.length < 200 || text.length === profileSavedLength) return;
+  profileSavedLength = text.length;
+
+  storeProfile(memberId, text).then(() => {
+    showProfileToast(`✓ プロフィール取得済み（ID: ${memberId}）`);
+  });
+}
+
+// プロフィール画面用の小さなトースト表示
+function showProfileToast(msg) {
+  let toast = document.getElementById('scout-profile-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'scout-profile-toast';
+    toast.style.cssText =
+      'position:fixed;bottom:16px;left:260px;z-index:99999;background:rgba(30,30,30,0.75);' +
+      'color:#fff;border-radius:10px;padding:6px 12px;font-size:11px;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  clearTimeout(showProfileToast._timer);
+  showProfileToast._timer = setTimeout(() => { toast.style.display = 'none'; }, 2500);
+}
+
 // ── パネルの初期化 ──
 function initPanel() {
   if (document.getElementById('scout-ext-panel')) return;
@@ -605,8 +706,28 @@ function initPanel() {
 
   getScoutCount().then(count => updateBadge(count));
 
-  document.getElementById('scoutGenerateBtn').addEventListener('click', () => {
-    const candidateInfo = extractCandidateInfo();
+  document.getElementById('scoutGenerateBtn').addEventListener('click', async () => {
+    let candidateInfo = '';
+
+    if (getProfilePageMemberId()) {
+      // プロフィール画面上で押された場合は従来どおりページから直接抽出
+      candidateInfo = extractCandidateInfo();
+    } else {
+      // スカウトメール入力画面: 宛先IDでstorageからプロフィールを取り出す
+      const memberId = getRecipientMemberId();
+      if (!memberId) {
+        showStatus('⚠ 宛先の会員IDが読み取れませんでした。', 'error');
+        return;
+      }
+      const profile = await getStoredProfile(memberId);
+      if (!profile || !profile.text) {
+        // 防波堤: プロフィール未取得のまま空のメールを生成させない
+        showStatus(`⚠ 候補者プロフィールが未取得です（ID: ${memberId}）。宛先のリンクをクリックしてプロフィール画面を一度開いてから、もう一度生成してください。`, 'warning');
+        return;
+      }
+      candidateInfo = profile.text;
+    }
+
     if (!candidateInfo.trim()) {
       showStatus('⚠ 候補者情報が取得できませんでした', 'error');
       return;
@@ -619,7 +740,6 @@ function initPanel() {
 
     chrome.runtime.sendMessage({
       action: 'openGemini',
-      candidateInfo: candidateInfo,
       prompt: fullPrompt
     });
   });
@@ -773,7 +893,10 @@ chrome.runtime.onMessage.addListener((message) => {
 
 // ── サイトの「送信」ボタン押下で当日カウンタを加算 ──
 // バッジは「実際に送信ボタンを押した数」を表す（生成しただけでは増えない）
+// 送信ボタンのID(#btn_conf)は応募者メッセージ画面等でも共通のため、
+// スカウトメール送信画面(URLに /scoutMail/ を含む)のみカウント対象とする
 document.addEventListener('click', (e) => {
+  if (!location.pathname.includes('/scoutMail/')) return;
   const target = e.target instanceof Element ? e.target : null;
   if (!target) return;
   const btn = target.closest('#btn_conf, input[type="submit"][name="conf"]');
@@ -783,6 +906,9 @@ document.addEventListener('click', (e) => {
 
 // ── ページ読み込み完了後に初期化 ──
 function tryInit() {
+  // プロフィール画面ならページ全文を自動保存（何度呼ばれても差分がなければスキップ）
+  saveProfileIfDetailPage();
+
   if (document.getElementById('scout-ext-panel')) return;
   if (isScoutFormPresent()) initPanel();
 }
@@ -794,10 +920,13 @@ if (document.readyState === 'loading') {
   tryInit();
 }
 
-// DOM変化を監視（スカウトフォームの動的表示に対応）
+// 遅延描画の取りこぼし防止（プロフィール保存の再試行）
+setTimeout(tryInit, 1500);
+setTimeout(tryInit, 4000);
+
+// DOM変化を監視（スカウトフォームの動的表示・プロフィール遅延描画に対応）
 let debounceTimer = null;
 const observer = new MutationObserver(() => {
-  if (document.getElementById('scout-ext-panel')) return;
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(tryInit, 300);
 });
