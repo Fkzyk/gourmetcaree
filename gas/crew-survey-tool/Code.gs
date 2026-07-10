@@ -39,7 +39,9 @@ var CONFIG = {
   SHEET_MANUAL: '💡操作マニュアル',
 
   // 抽出条件
-  EMPLOYMENT_KEYWORDS: ['パート', 'アルバイト'], // 社員区分名にこの文字を含む人が対象
+  // 社員区分名にこの文字を含む人が対象（給与システムの出力は半角カナのため両方登録:
+  //  ﾊﾟｰﾄ・ｱﾙﾊﾞｲﾄ / ﾊﾟｰﾄ（社保） が対象、店員・準社員は対象外）
+  EMPLOYMENT_KEYWORDS: ['パート', 'アルバイト', 'ﾊﾟｰﾄ', 'ｱﾙﾊﾞｲﾄ'],
   AGE_MIN: null, // 全クルー対象のため年齢制限なし（学生版と同じ 16〜24 に絞る場合は 16 / 24 を設定）
   AGE_MAX: null,
 
@@ -74,7 +76,8 @@ function updateLists() {
   var now = new Date();
 
   // --- マスター読み込み ---
-  var storeMap = readStoreMaster_(ss);        // 店番 -> {division, storeName}
+  var storeMaster = readStoreMaster_(ss);     // {map: 店番 -> {division, storeName}, divisionOrder: [...]}
+  var storeMap = storeMaster.map;
   var excludeSet = readExcludeList_(ss);      // 除外する社員No の Set
   var respondentSet = readRespondents_(ss);   // 回答済み社員No の Set
 
@@ -92,6 +95,8 @@ function updateLists() {
     retired: ['退職年月日'],
     age: ['年齢']
   });
+  // 外国人フラグ列(0/1)は任意。存在すればフラグを優先して外国籍判定に使う
+  var foreignCol = findFormColumnOptional_(empValues[0], ['外国人']);
 
   var targets = [];   // 対象者 {no, name, age, storeNo, storeName, division, answered}
   var foreigners = []; // カタカナのみ氏名
@@ -106,18 +111,23 @@ function updateLists() {
 
     if (row[col.retired] !== '' && row[col.retired] != null) continue; // 退職済みは除外
 
-    var age = Number(row[col.age]);
+    // 給与システムの年齢は「69.03」(69歳3ヶ月)形式のため整数部を年齢とする
+    var age = Math.floor(Number(row[col.age]) || 0);
     if (CONFIG.AGE_MIN != null && !(age >= CONFIG.AGE_MIN)) continue;
     if (CONFIG.AGE_MAX != null && !(age <= CONFIG.AGE_MAX)) continue;
 
-    var storeNo = String(row[col.storeNo] || '').replace(/\.0$/, '').trim();
+    var storeNo = normalizeStoreNo_(row[col.storeNo]); // 所属No「0004」と店番「4」のゼロ埋め差を吸収
     var store = storeMap[storeNo];
     if (!store) continue; // 店舗所属者のみ対象
 
     var name = String(row[col.name] || '').trim();
     var person = { no: no, name: name, age: age, storeNo: storeNo, storeName: store.storeName, division: store.division };
 
-    if (isKatakanaOnly_(name)) { // 外国籍と思われる人は妥当性確認用リストへ出し対象から除外
+    // 外国籍判定: 外国人フラグ(=1)を優先し、フラグ列が無い場合はカタカナのみ氏名で推定
+    var isForeign = foreignCol !== null
+      ? String(row[foreignCol]).trim() === '1'
+      : isKatakanaOnly_(name);
+    if (isForeign) { // 妥当性確認用リストへ出し対象から除外
       foreigners.push(person);
       continue;
     }
@@ -132,8 +142,8 @@ function updateLists() {
   var pending = targets.filter(function (t) { return !t.answered; });
 
   writePendingSheet_(ss, now, targets.length, answered.length, pending);
-  writeStoreRateSheet_(ss, now, targets);
-  writeDivisionRateSheet_(ss, now, targets);
+  writeStoreRateSheet_(ss, now, targets, storeMaster.divisionOrder);
+  writeDivisionRateSheet_(ss, now, targets, storeMaster.divisionOrder);
   writeForeignSheet_(ss, foreigners);
 
   SpreadsheetApp.getActiveSpreadsheet().toast(
@@ -141,20 +151,34 @@ function updateLists() {
     'リスト更新 完了', 10);
 }
 
-/** 店長・営業部長シート: A=営業部, C=店番, D=店名 */
+/**
+ * 店長・営業部長(店舗マスター)シートを読み込む。
+ * 列はヘッダー名(営業部/店番/店名)で自動判定するため、
+ * 「営業部組織_YYYY年M月」形式(営業部,都道府県,市町村,店番,店名,…)のシートもそのまま使える。
+ * 営業部の表示順はマスターの出現順を保持する。
+ */
 function readStoreMaster_(ss) {
   var sheet = mustGetSheet_(ss, CONFIG.SHEET_STORE_MASTER);
   var values = sheet.getDataRange().getValues();
+  if (values.length < 2) throw new Error('「' + CONFIG.SHEET_STORE_MASTER + '」にデータがありません。');
+  var col = findColumns_(values[0], {
+    division: ['営業部'],
+    storeNo: ['店番'],
+    storeName: ['店名', '店舗名']
+  });
   var map = {};
+  var divisionOrder = [];
   for (var r = 1; r < values.length; r++) {
-    var storeNo = String(values[r][2] == null ? '' : values[r][2]).replace(/\.0$/, '').trim();
+    var storeNo = normalizeStoreNo_(values[r][col.storeNo]);
     if (!storeNo) continue;
+    var division = String(values[r][col.division] || '').trim();
     map[storeNo] = {
-      division: String(values[r][0] || '').trim(),
-      storeName: String(values[r][3] || '').trim()
+      division: division,
+      storeName: String(values[r][col.storeName] || '').trim()
     };
+    if (division && divisionOrder.indexOf(division) === -1) divisionOrder.push(division);
   }
-  return map;
+  return { map: map, divisionOrder: divisionOrder };
 }
 
 /** 除外リスト: A列の社員No */
@@ -220,7 +244,7 @@ function writePendingSheet_(ss, now, totalCount, answeredCount, pending) {
   sheet.autoResizeColumns(1, 4);
 }
 
-function writeStoreRateSheet_(ss, now, targets) {
+function writeStoreRateSheet_(ss, now, targets, divisionOrder) {
   var sheet = getOrCreateSheet_(ss, CONFIG.SHEET_RATE_STORE);
   sheet.clear();
 
@@ -232,8 +256,14 @@ function writeStoreRateSheet_(ss, now, targets) {
     if (t.answered) byStore[key].answered++;
   });
   var rows = Object.keys(byStore).map(function (k) { return byStore[k]; });
+  var divIdx = function (d) {
+    var i = (divisionOrder || []).indexOf(d);
+    return i === -1 ? 999 : i;
+  };
   rows.sort(function (a, b) {
-    return a.division === b.division ? Number(a.storeNo) - Number(b.storeNo) : (a.division < b.division ? -1 : 1);
+    return divIdx(a.division) !== divIdx(b.division)
+      ? divIdx(a.division) - divIdx(b.division)
+      : Number(a.storeNo) - Number(b.storeNo);
   });
 
   sheet.getRange(1, 1).setValue('店舗別 回答率').setFontWeight('bold').setFontSize(12);
@@ -250,18 +280,21 @@ function writeStoreRateSheet_(ss, now, targets) {
   sheet.autoResizeColumns(1, 7);
 }
 
-function writeDivisionRateSheet_(ss, now, targets) {
+function writeDivisionRateSheet_(ss, now, targets, divisionOrder) {
   var sheet = getOrCreateSheet_(ss, CONFIG.SHEET_RATE_DIVISION);
   sheet.clear();
 
   var byDiv = {};
-  var order = [];
+  var order = (divisionOrder || []).slice(); // 店舗マスターの出現順(関東第一→…→九州第三)を維持
   targets.forEach(function (t) {
-    if (!byDiv[t.division]) { byDiv[t.division] = { total: 0, answered: 0 }; order.push(t.division); }
+    if (!byDiv[t.division]) {
+      byDiv[t.division] = { total: 0, answered: 0 };
+      if (order.indexOf(t.division) === -1) order.push(t.division);
+    }
     byDiv[t.division].total++;
     if (t.answered) byDiv[t.division].answered++;
   });
-  order.sort();
+  order = order.filter(function (d) { return byDiv[d]; });
 
   sheet.getRange(1, 1).setValue('営業部別 回答率').setFontWeight('bold').setFontSize(12);
   sheet.getRange(2, 1).setValue('集計日時: ' + formatDate_(now));
@@ -554,6 +587,14 @@ function normalizeEmployeeNo_(v) {
   digits = digits.replace(/^0+/, '') || '0';
   while (digits.length < 6) digits = '0' + digits;
   return digits;
+}
+
+/** 店番・所属Noを正規化('0004'/4/'126'/126.0 → '4'/'126')。ゼロ埋め差を吸収して照合する */
+function normalizeStoreNo_(v) {
+  if (v == null || v === '') return '';
+  var digits = String(v).replace(/\.0+$/, '').replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  return String(Number(digits)); // 先頭ゼロを除去
 }
 
 /** 電話番号からハイフン・空白等を除去 */
