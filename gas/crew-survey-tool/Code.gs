@@ -42,7 +42,7 @@ var CONFIG = {
   // 社員区分名にこの文字を含む人が対象（給与システムの出力は半角カナのため両方登録:
   //  ﾊﾟｰﾄ・ｱﾙﾊﾞｲﾄ / ﾊﾟｰﾄ（社保） が対象、店員・準社員は対象外）
   EMPLOYMENT_KEYWORDS: ['パート', 'アルバイト', 'ﾊﾟｰﾄ', 'ｱﾙﾊﾞｲﾄ'],
-  AGE_MIN: null, // 全クルー対象のため年齢制限なし（学生版と同じ 16〜24 に絞る場合は 16 / 24 を設定）
+  AGE_MIN: 22,  // 22歳以上に限定（制限をなくす場合は null を設定）
   AGE_MAX: null,
 
   // 進捗状況プルダウンの選択肢（学生版と同一）
@@ -214,8 +214,12 @@ function writePendingSheet_(ss, now, totalCount, answeredCount, pending) {
 
   var pendingCount = pending.length;
   var conditions = '在籍中のパート・アルバイト、店舗所属者のみ、外国籍・除外リスト対象除く';
-  if (CONFIG.AGE_MIN != null || CONFIG.AGE_MAX != null) {
-    conditions = (CONFIG.AGE_MIN || '') + '〜' + (CONFIG.AGE_MAX || '') + '歳の' + conditions;
+  if (CONFIG.AGE_MIN != null && CONFIG.AGE_MAX != null) {
+    conditions = CONFIG.AGE_MIN + '〜' + CONFIG.AGE_MAX + '歳の' + conditions;
+  } else if (CONFIG.AGE_MIN != null) {
+    conditions = CONFIG.AGE_MIN + '歳以上の' + conditions;
+  } else if (CONFIG.AGE_MAX != null) {
+    conditions = CONFIG.AGE_MAX + '歳以下の' + conditions;
   }
   var summary = [
     [CONFIG.TOOL_TITLE + ' 未提出者リスト', ''],
@@ -508,7 +512,7 @@ function setupSheets() {
       ['', ''],
       ['3. 抽出条件', ''],
       ['   雇用形態', '「パート」または「アルバイト」を含む区分'],
-      ['   年齢', '制限なし(全クルー対象)'],
+      ['   年齢', '22歳以上'],
       ['   在籍状況', '退職年月日が空欄の人のみ対象'],
       ['   名前', '氏名がカタカナのみの場合は外国籍として自動除外'],
       ['   所属', '従業員リスト「所属No」が店長・営業部長シートC列「店番」と一致する店舗所属者のみ'],
