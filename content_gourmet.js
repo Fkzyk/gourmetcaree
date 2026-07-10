@@ -893,7 +893,10 @@ chrome.runtime.onMessage.addListener((message) => {
 
 // ── サイトの「送信」ボタン押下で当日カウンタを加算 ──
 // バッジは「実際に送信ボタンを押した数」を表す（生成しただけでは増えない）
+// 送信ボタンのID(#btn_conf)は応募者メッセージ画面等でも共通のため、
+// スカウトメール送信画面(URLに /scoutMail/ を含む)のみカウント対象とする
 document.addEventListener('click', (e) => {
+  if (!location.pathname.includes('/scoutMail/')) return;
   const target = e.target instanceof Element ? e.target : null;
   if (!target) return;
   const btn = target.closest('#btn_conf, input[type="submit"][name="conf"]');
