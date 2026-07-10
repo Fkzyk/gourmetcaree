@@ -29,17 +29,9 @@
   if (window.__gcOpenRateCheckerLoaded) return;
   window.__gcOpenRateCheckerLoaded = true;
 
-  // メールBOXの一覧ページ以外では何もしない
-  // （スカウトメール /scoutMail/list のほか、応募メール等の各タブも
-  //   URLが「〜Mail/list」の形なら同じ仕組みで集計できる）
-  if (!/Mail\/list/.test(location.pathname)) return;
-
   // ── 設定 ──────────────────────────────────────────────
   const MAX_PAGES = 300;        // 暴走防止の上限ページ数
   const FETCH_DELAY_MS = 300;   // サーバー負荷軽減のためのページ間ウェイト
-  // いま表示中のタブ（スカウト/応募など）の一覧をそのまま巡回する
-  const LIST_BASE = location.pathname.replace(/\/changePage\/\d+.*$/, '');
-  const PAGE_URL = (n) => `${location.origin}${LIST_BASE}/changePage/${n}`;
   const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
   // ============================================================
@@ -111,14 +103,32 @@
     return max;
   }
 
-  async function fetchPage(n) {
-    const res = await fetch(PAGE_URL(n), { credentials: 'same-origin' });
+  // いま表示中の一覧の「ページ送り」リンクから巡回用のURLを割り出す
+  // （例: .../scoutMail/list/changePage/2 → .../scoutMail/list）
+  // ページ送りリンクがなければ1ページだけの一覧として扱う
+  function listBaseFrom(doc) {
+    for (const a of doc.querySelectorAll('a[href*="changePage/"]')) {
+      if (a.href) return a.href.replace(/\/changePage\/\d+.*$/, '');
+    }
+    return null;
+  }
+
+  async function fetchPage(base, n) {
+    const res = await fetch(`${base}/changePage/${n}`, { credentials: 'same-origin' });
     if (!res.ok) throw new Error(`ページ${n}の取得に失敗しました (HTTP ${res.status})`);
     const html = await res.text();
     return new DOMParser().parseFromString(html, 'text/html');
   }
 
   async function collectAll(onProgress) {
+    const base = listBaseFrom(document);
+
+    // ページ送りがない＝1ページだけの一覧
+    if (!base) {
+      onProgress(1, 1);
+      return { rows: parseRows(document).map(enrich), pages: 1 };
+    }
+
     const currentPageMatch = location.pathname.match(/changePage\/(\d+)/);
     const currentPage = currentPageMatch ? parseInt(currentPageMatch[1], 10) : 1;
 
@@ -133,7 +143,7 @@
         doc = document;
       } else {
         if (fetched > 0) await new Promise((r) => setTimeout(r, FETCH_DELAY_MS));
-        doc = await fetchPage(n);
+        doc = await fetchPage(base, n);
         fetched++;
       }
       allRows.push(...parseRows(doc));
@@ -430,18 +440,25 @@
   }
 
   // ── DOM構築 ──
-  const launchBtn = document.createElement('button');
-  launchBtn.id = 'orc-launch';
-  launchBtn.textContent = '📊 開封率チェッカー';
-  document.documentElement.appendChild(launchBtn);
+  // 変数は先に用意し、実際の生成はメール一覧を検出したときに行う（initUI）
+  let launchBtn = null;
+  let overlay = null;
+  let modalBody = null;
+  let filterBox = null;
 
-  const overlay = document.createElement('div');
-  overlay.id = 'orc-overlay';
-  overlay.style.display = 'none';
-  overlay.innerHTML = `
+  function initUI() {
+    launchBtn = document.createElement('button');
+    launchBtn.id = 'orc-launch';
+    launchBtn.textContent = '📊 開封率チェッカー';
+    document.documentElement.appendChild(launchBtn);
+
+    overlay = document.createElement('div');
+    overlay.id = 'orc-overlay';
+    overlay.style.display = 'none';
+    overlay.innerHTML = `
     <div id="orc-modal">
       <div class="orc-head">
-        <span class="orc-title">📊 スカウトメール開封率チェッカー</span>
+        <span class="orc-title">📊 メール開封率チェッカー</span>
         <span class="orc-head-btns">
           <button id="orc-refresh" title="データを取り直す">🔄 再取得</button>
           <button id="orc-close" title="閉じる">✕</button>
@@ -450,17 +467,28 @@
       <div id="orc-filter"></div>
       <div id="orc-body"></div>
     </div>`;
-  document.documentElement.appendChild(overlay);
+    document.documentElement.appendChild(overlay);
 
-  const modalBody = overlay.querySelector('#orc-body');
-  const filterBox = overlay.querySelector('#orc-filter');
+    modalBody = overlay.querySelector('#orc-body');
+    filterBox = overlay.querySelector('#orc-filter');
 
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.style.display = 'none';
-  });
-  overlay.querySelector('#orc-close').addEventListener('click', () => {
-    overlay.style.display = 'none';
-  });
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.style.display = 'none';
+    });
+    overlay.querySelector('#orc-close').addEventListener('click', () => {
+      overlay.style.display = 'none';
+    });
+
+    overlay.querySelector('#orc-refresh').addEventListener('click', () => {
+      cache = null;
+      load();
+    });
+
+    launchBtn.addEventListener('click', () => {
+      overlay.style.display = 'flex';
+      if (!cache && !loading) load();
+    });
+  }
 
   // ── 状態 ──
   let cache = null;     // { rows, pages }
@@ -657,13 +685,27 @@
     }
   }
 
-  overlay.querySelector('#orc-refresh').addEventListener('click', () => {
-    cache = null;
-    load();
-  });
+  // ── 起動判定 ──────────────────────────────────────────
+  // URLの形には頼らず、「画面にメール一覧（既読/未読の行）が表示されて
+  // いるか」で判定する。タブの切り替え方や画面遷移の仕組みが変わっても、
+  // メール一覧が見えてさえいればボタンが出る。
+  // 一覧があとから描画される場合に備えて、しばらくDOMの変化も監視する。
+  let uiReady = false;
 
-  launchBtn.addEventListener('click', () => {
-    overlay.style.display = 'flex';
-    if (!cache && !loading) load();
-  });
+  function maybeInit() {
+    if (uiReady) return;
+    if (!parseRows(document).length) return;
+    uiReady = true;
+    initUI();
+  }
+
+  maybeInit();
+  if (!uiReady) {
+    const mo = new MutationObserver(() => {
+      maybeInit();
+      if (uiReady) mo.disconnect();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+    setTimeout(() => mo.disconnect(), 60000); // 1分で監視を打ち切り
+  }
 })();
