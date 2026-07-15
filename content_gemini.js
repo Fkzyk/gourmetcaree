@@ -40,12 +40,25 @@ function getInputArea() {
   );
 }
 
-// ── レスポンス待機（Chrome実機検証済みセレクタ）──────────
+// ── 生成中かどうかの判定（停止ボタンの有無）──────────────
+// Gemini は生成中、送信ボタンが「回答を停止」ボタンに変わる
+function isGenerating() {
+  return !!(
+    document.querySelector('button[aria-label*="停止"]') ||
+    document.querySelector('button[aria-label*="Stop"]') ||
+    document.querySelector('button.stop')
+  );
+}
+
+// ── レスポンス待機 ─────────────────────────────────────────
+// 完了条件: テキストが3秒間変化しない かつ 生成中インジケータが消えている
+// (旧実装は2秒静止で完了扱いにしていたため、生成途中の一時停止で
+//  途中までの文章を取り込む事故があった)
 function waitForResponse() {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error('タイムアウト: Geminiの応答が120秒以内に完了しませんでした')),
-      120_000
+      () => reject(new Error('タイムアウト: Geminiの応答が180秒以内に完了しませんでした')),
+      180_000
     );
 
     let lastText = '';
@@ -55,9 +68,16 @@ function waitForResponse() {
       const el = [...document.querySelectorAll('message-content')].at(-1);
       const currentText = (el?.innerText ?? '').trim();
 
+      // 生成中インジケータが出ている間は完了と判定しない
+      if (isGenerating()) {
+        stableCount = 0;
+        lastText = currentText;
+        return;
+      }
+
       if (currentText && currentText === lastText) {
         stableCount++;
-        if (stableCount >= 5) {
+        if (stableCount >= 6) {
           clearInterval(interval);
           clearTimeout(timer);
           resolve(currentText);
@@ -66,7 +86,7 @@ function waitForResponse() {
         stableCount = 0;
         lastText = currentText;
       }
-    }, 400);
+    }, 500);
   });
 }
 
