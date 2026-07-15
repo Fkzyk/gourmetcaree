@@ -234,7 +234,19 @@ const SYSTEM_PROMPT = `あなたは「株式会社資さん」の人事採用担
 - セクションラベル・見出し・マークダウン記号は絶対に出力しない
 - 本文は各ブロックの内容を自然につなげた一続きの文章として出力すること
 - 感想・意見・アドバイス・提案・次のアクション・コメントは絶対に出力しない
-- メール本文の後に何も付け加えない`;
+- メール本文の後に何も付け加えない
+
+# 出力前セルフチェック（チェックの過程・結果は一切出力しない。違反があれば修正してから出力する）
+
+1. 1行目は件名のみで、末尾が「【内定まで最短14日】 急成長を続ける福岡うどん業態」になっているか。70文字以内か
+2. 2行目は空行か。3行目以降が本文のみか
+3. {{ }} のプレースホルダー表記が残っていないか
+4. 「件名:」「本文:」等のラベル、セクション見出し、マークダウン記号が混ざっていないか
+5. 文体ルールの使用禁止語句を本文で使っていないか
+6. 日本語の文中に英単語が混入していないか（OJT等の固有名詞を除く）
+7. 候補者の年齢・性別に触れていないか
+8. 同じ情報を2回書いていないか。段落頭の接続語が2箇所以上ないか
+9. 確定文の語尾・数値（109店舗、400店舗、年収、休日等）を変えていないか`;
 
 // ── 動作設定 ──
 // 入力完了後に送信/確認ボタン(#btn_conf)を自動クリックするか。
@@ -815,6 +827,12 @@ chrome.runtime.onMessage.addListener((message) => {
       if (generateBtn) generateBtn.disabled = false;
       return;
     }
+    // プレースホルダー({{ }})が残っている = 生成が不完全
+    if (/\{\{.+?\}\}/.test(subjectText + bodyText)) {
+      showStatus('⚠ 生成結果にプレースホルダー（{{ }}）が残っています。もう一度生成ボタンを押してください。', 'warning');
+      if (generateBtn) generateBtn.disabled = false;
+      return;
+    }
 
     if (subjectText && bodyText) {
       showStatus('⏳ フォームに自動入力中...', 'info');
@@ -842,6 +860,8 @@ chrome.runtime.onMessage.addListener((message) => {
           const contamination = detectEnglishContamination(bodyText);
           if (contamination) {
             showStatus(`⚠ 入力しましたが、本文に英単語の混入があります（「${contamination.trim()}」）。該当箇所を直すか、再生成してください。`, 'warning');
+          } else if (subjectText.length > 70) {
+            showStatus(`⚠ 入力しましたが、件名が70文字を超えています（${subjectText.length}文字）。件名を短く直してください。`, 'warning');
           } else if (confirmed) {
             showStatus('✅ 確認画面が表示されました。内容を確認して「送信」を押してください。', 'success');
           } else {
