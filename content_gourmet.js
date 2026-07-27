@@ -1272,13 +1272,33 @@ async function startBatch(dryRun) {
 async function requestBatchStop() {
   const b = await getBatch();
   if (b && b.active) {
+    // ハードストップ: 生成待ちで固まっていても即座に終了する
+    // (旧実装は停止フラグを立てるだけで、回答が返らないと処理されず固まった)
+    clearTimeout(batchWatchdog);
+    batchAwait = null;
+    batchRouted = false;
+    b.active = false;
     b.stopped = true;
     await setBatch(b);
-    showBatchToast('停止を受け付けました。処理中の1件が終わり次第停止します');
+    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
+    showReport(b);
+    showBatchToast('停止しました');
   } else {
     showBatchToast('実行中のバッチはありません');
     setTimeout(hideBatchToast, 3000);
   }
+}
+
+// ── ウォッチドッグ: 生成/検査の応答が一定時間来なければ自動でスキップ ──
+// (人間がGeminiを触って固まった場合などの自動復帰)
+let batchWatchdog = null;
+function armWatchdog(kind) {
+  clearTimeout(batchWatchdog);
+  batchWatchdog = setTimeout(async () => {
+    if (batchAwait === kind) {
+      await batchHandleError('応答タイムアウト(3分)。Geminiが応答しませんでした');
+    }
+  }, 180000);
 }
 
 async function gotoCurrent() {
@@ -1402,6 +1422,7 @@ async function batchRequestGenerate(profileText) {
   if (!b || !b.active) return;
   batchAwait = 'generate';
   batchMail = null;
+  armWatchdog('generate');
   showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: メール生成中...`);
   const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n候補者情報:\n${profileText}\n\n上記の候補者情報をもとにスカウトメールを作成してください。出力は件名1行＋空行＋本文のみ。ラベルは不要です。`;
   chrome.runtime.sendMessage({ action: 'openGemini', prompt: fullPrompt, mode: 'generate' });
@@ -1410,6 +1431,7 @@ async function batchRequestGenerate(profileText) {
 // ── 生成結果の受け取り(第1層: ルールベース検証 → 入力 → 第2層: AI二次検査) ──
 async function batchHandleGenerated(message) {
   batchAwait = null;
+  clearTimeout(batchWatchdog);
   const b = await getBatch();
   if (!b || !b.active) return;
 
@@ -1461,6 +1483,7 @@ async function batchHandleGenerated(message) {
 
   batchMail = { subject: subjectText, body: bodyText };
   batchAwait = 'verify';
+  armWatchdog('verify');
   showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: AI二次検査中...`);
   chrome.runtime.sendMessage({ action: 'openGemini', mode: 'verify', prompt: buildVerifyPrompt(subjectText, bodyText) });
 }
@@ -1491,6 +1514,7 @@ ${body}`;
 // ── AI二次検査の結果(第3層: 合格→送信/ドライラン記録、不合格→再生成1回→スキップ) ──
 async function batchHandleVerify(message) {
   batchAwait = null;
+  clearTimeout(batchWatchdog);
   const b = await getBatch();
   if (!b || !b.active) return;
   const raw = (message.rawText || message.subject || '').trim();
