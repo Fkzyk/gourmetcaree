@@ -139,4 +139,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (pendingRequest) sendToGourmet(pendingRequest.sourceTabId, message);
     return true;
   }
+
+  // ─── スリープ防止(自動スカウトのバッチ実行中のみ) ───
+  // 'display' = 画面を消灯させない。消灯→自動ロック→スリープの連鎖を防ぐ
+  if (message.action === 'keepAwakeOn') {
+    chrome.power.requestKeepAwake('display');
+    return true;
+  }
+  if (message.action === 'keepAwakeOff') {
+    chrome.power.releaseKeepAwake();
+    return true;
+  }
 });
