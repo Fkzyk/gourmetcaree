@@ -1138,18 +1138,30 @@ function ngCheck(profileText) {
   }
   const t = zenToHan(text);
   let age = null;
-  let m = t.match(/年齢\s*\n?\s*(\d{2})/);
+  // 「年齢」ラベルの直後(改行含む8文字以内)の数値
+  let m = t.match(/年齢[^0-9]{0,8}([0-9]{1,3})/);
   if (m) age = parseInt(m[1], 10);
-  if (age === null) { m = t.match(/(\d{2})歳/); if (m) age = parseInt(m[1], 10); }
+  if (age === null) { m = t.match(/([0-9]{2})歳/); if (m) age = parseInt(m[1], 10); }
+  if (age !== null && (age < 15 || age > 99)) age = null;
+
   let companies = null;
-  m = t.match(/(\d+)社経験/);
+  // ① 「◯社経験」表記
+  m = t.match(/([0-9]+)社経験/);
   if (m) companies = parseInt(m[1], 10);
+  // ② 職務経歴の「勤務期間」ラベルの出現数(職歴1件につき1つ)
   if (companies === null) {
-    // 職歴の勤務期間(YYYY/MM〜)の出現数で代用
-    const jobs = t.match(/\d{4}\/\d{1,2}\s*[〜~～]/g);
+    const labels = t.match(/勤務期間/g);
+    if (labels && labels.length > 0) companies = labels.length;
+  }
+  // ③ 期間表記(2022/04〜・2022年4月〜)の出現数
+  if (companies === null) {
+    const jobs = t.match(/\d{4}(?:\/\d{1,2}|年\d{1,2}月)\s*[〜~～]/g);
     if (jobs && jobs.length > 0) companies = jobs.length;
   }
-  if (age === null || companies === null) return '判定不能(年齢または社数が読み取れない)';
+
+  if (age === null && companies === null) return '判定不能(年齢と社数の両方が読み取れない)';
+  if (age === null) return '判定不能(年齢が読み取れない)';
+  if (companies === null) return '判定不能(社数が読み取れない)';
   const tens = Math.floor(age / 10);
   const tenshoku = companies - 1; // 転職回数 = 社数 - 1
   if (tenshoku >= tens) return `転職回数NG(${tenshoku}回≧年齢10の位${tens})`;
