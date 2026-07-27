@@ -3,7 +3,7 @@
   "name": "スカウトメール自動生成 - グルメキャリー",
   "version": "1.0",
   "description": "グルメキャリー管理画面の候補者情報からGeminiでスカウトメールを自動生成します",
-  "permissions": ["storage", "tabs", "power"],
+  "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://kanri.gourmetcaree.jp/*",
     "https://gemini.google.com/*"

@@ -1266,7 +1266,6 @@ async function startBatch(dryRun) {
   if (!dryRun && !confirm(`本番モード: 検証を通過したメールは確認なしで自動送信されます。\n${queue.length}件を1件ずつ処理します。よろしいですか？`)) return;
   if (dryRun && !confirm(`ドライラン: 送信ボタンは押さずに、${queue.length}件の生成と検証だけを行います。よろしいですか？`)) return;
   await setBatch({ active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false, log: [], startedAt: Date.now() });
-  chrome.runtime.sendMessage({ action: 'keepAwakeOn' });
   gotoCurrent();
 }
 
@@ -1290,7 +1289,6 @@ async function gotoCurrent() {
     b.active = false;
     await setBatch(b);
     await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
-    chrome.runtime.sendMessage({ action: 'keepAwakeOff' });
     showReport(b);
     return;
   }
@@ -1314,7 +1312,6 @@ async function recordAndNext(result, reason, mail) {
     b.active = false;
     await setBatch(b);
     await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
-    chrome.runtime.sendMessage({ action: 'keepAwakeOff' });
     showReport(b);
     return;
   }
@@ -1333,8 +1330,6 @@ async function routeBatch() {
   batchRouted = true;
   const b = await getBatch();
   if (!b || !b.active) { batchRouted = false; return; }
-  // ページ遷移のたびにスリープ防止を再要求(サービスワーカー再起動への保険)
-  chrome.runtime.sendMessage({ action: 'keepAwakeOn' });
   const target = b.queue[b.idx];
   showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: ID ${target} を処理中...`);
 
