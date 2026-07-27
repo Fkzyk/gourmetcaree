@@ -913,7 +913,11 @@ const REQUIRED_PHRASES = [
 ];
 
 function checkFixedPhrases(text) {
-  return REQUIRED_PHRASES.filter(p => !text.includes(p));
+  // 空白(半角/全角/改行)の違いで誤検知しないよう、両側から空白を除いて照合する
+  // (署名の「採用担当　古川 和幸」等はGemini出力で空白種が揺れるため)
+  const normalize = s => s.replace(/[\s　]+/g, '');
+  const normText = normalize(text);
+  return REQUIRED_PHRASES.filter(p => !normText.includes(normalize(p)));
 }
 
 // ── 日本語文中への英単語混入(生成事故)を検出する ──
@@ -1170,6 +1174,19 @@ function addSentRegistry(id) {
   }));
 }
 
+// NG判定(職種・転職回数)は決定的なので記録し、次回以降キューの枠を消費させない
+// (検証不合格のスキップは再挑戦の余地があるため記録しない)
+function getNgRegistry() {
+  return new Promise(res => chrome.storage.local.get(['autoNgIds'], d => res(d.autoNgIds || {})));
+}
+function addNgRegistry(id, reason) {
+  return new Promise(res => chrome.storage.local.get(['autoNgIds'], d => {
+    const reg = d.autoNgIds || {};
+    reg[id] = { reason, at: Date.now() };
+    chrome.storage.local.set({ autoNgIds: reg }, res);
+  }));
+}
+
 function isListPage() { return location.pathname.includes('/member/list'); }
 function isScoutPage() { return location.pathname.includes('/scoutMail/'); }
 
@@ -1226,10 +1243,11 @@ async function startBatch(dryRun) {
   const existing = await getBatch();
   if (existing && existing.active) { showBatchToast('すでに実行中です。停止するには「止」を押してください'); return; }
   const sent = await getSentRegistry();
+  const ng = await getNgRegistry();
   const ids = [];
   document.querySelectorAll('a[href*="/member/detail/index/"]').forEach(a => {
     const m = (a.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
-    if (m && !ids.includes(m[1]) && !sent[m[1]]) ids.push(m[1]);
+    if (m && !ids.includes(m[1]) && !sent[m[1]] && !ng[m[1]]) ids.push(m[1]);
   });
   const queue = ids.slice(0, BATCH_MAX);
   if (!queue.length) { showBatchToast('この一覧に処理対象の候補者が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
@@ -1254,6 +1272,14 @@ async function requestBatchStop() {
 async function gotoCurrent() {
   const b = await getBatch();
   if (!b || !b.active) return;
+  // 待機中に停止が押されていたら、次の候補へ進まず即終了する
+  if (b.stopped) {
+    b.active = false;
+    await setBatch(b);
+    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
+    showReport(b);
+    return;
+  }
   location.href = '/shop-pc/member/detail/index/' + b.queue[b.idx];
 }
 
@@ -1287,9 +1313,11 @@ async function recordAndNext(result, reason, mail) {
 async function routeBatch() {
   renderBatchPanel();
   if (batchRouted) return;
-  const b = await getBatch();
-  if (!b || !b.active) return;
+  // 競合防止: 非同期読み込みの前に同期的にガードを立てる
+  // (tryInitは1ページで複数回呼ばれるため、await中に2回目が通過するのを防ぐ)
   batchRouted = true;
+  const b = await getBatch();
+  if (!b || !b.active) { batchRouted = false; return; }
   const target = b.queue[b.idx];
   showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: ID ${target} を処理中...`);
 
@@ -1327,7 +1355,14 @@ async function batchProfileStep(target) {
   if (!text || text.length < 200) { await recordAndNext('skip', 'プロフィール取得失敗'); return; }
 
   const ng = ngCheck(text);
-  if (ng) { await recordAndNext('skip', ng); return; }
+  if (ng) {
+    // 決定的なNG(職種・転職回数)は記録して次回以降のキューから除外する
+    if (ng.startsWith('NG職種') || ng.startsWith('転職回数NG')) {
+      await addNgRegistry(target, ng);
+    }
+    await recordAndNext('skip', ng);
+    return;
+  }
 
   await storeProfile(target, text);
 
