@@ -890,18 +890,34 @@ function cleanGeminiOutput(subject, body) {
 // Geminiが固定文を複製する際に崩すことがある(実例:「出店」→「出出店」)。
 // どの類型・経験レベルでも必ず含まれるはずのフレーズを検証する
 const REQUIRED_PHRASES = [
+  'はじめまして。株式会社資さん',
   '資さんうどんは、北九州発祥のうどんチェーンです',
+  '2026年6月末時点で109店舗を展開しており',
   '2030年の400店舗を目標に出店を進めています',
   '調理専門職ではなく店長候補です',
   '【入社後の昇進例】',
+  '入社4か月で店長へ昇進（年収530万円）',
+  'エリア長へ昇進（年収720万円）',
   '選考は内定まで最短14日です',
   'すかいらーくグループの一員となり',
   '【募集条件】',
-  '月収30万円以上可、年収400万円～672万円'
+  '月収30万円以上可、年収400万円～672万円',
+  '休日：4週8休制、有給休暇、特別休暇',
+  '有給休暇を使わず7連休の取得可',
+  '月平均残業時間：28時間',
+  'キャリア：研修 → 現場OJT → 店長候補 → 店長 → エリアマネージャー',
+  '賞与年2回、食事補助、資格取得支援',
+  '借上社宅制度、引越費用負担',
+  '「話だけ聞きたい」「面接希望」の一言で構いません',
+  '採用担当　古川 和幸'
 ];
 
 function checkFixedPhrases(text) {
-  return REQUIRED_PHRASES.filter(p => !text.includes(p));
+  // 空白(半角/全角/改行)の違いで誤検知しないよう、両側から空白を除いて照合する
+  // (署名の「採用担当　古川 和幸」等はGemini出力で空白種が揺れるため)
+  const normalize = s => s.replace(/[\s　]+/g, '');
+  const normText = normalize(text);
+  return REQUIRED_PHRASES.filter(p => !normText.includes(normalize(p)));
 }
 
 // ── 日本語文中への英単語混入(生成事故)を検出する ──
@@ -920,6 +936,10 @@ chrome.runtime.onMessage.addListener((message) => {
   const generateBtn = document.getElementById('scoutGenerateBtn');
 
   if (message.action === 'showResult') {
+    // ── バッチ処理のフック(手動フローより先に処理) ──
+    if (message.mode === 'verify') { batchHandleVerify(message); return; }
+    if (batchAwait === 'generate') { batchHandleGenerated(message); return; }
+
     if (generateBtn) generateBtn.disabled = false;
     hideStatus();
 
@@ -1014,6 +1034,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.action === 'showError') {
+    if (batchAwait) { batchHandleError(message.error); return; }
     if (generateBtn) generateBtn.disabled = false;
     showStatus(`❌ エラー: ${message.error}`, 'error');
   }
@@ -1040,6 +1061,9 @@ document.addEventListener('click', (e) => {
 function tryInit() {
   // プロフィール画面ならページ全文を自動保存（何度呼ばれても差分がなければスキップ）
   saveProfileIfDetailPage();
+
+  // 全自動スカウトの振り分け(バッチ稼働中のみ動く。1ページ1回)
+  routeBatch();
 
   if (document.getElementById('scout-ext-panel')) return;
   if (isScoutFormPresent()) initPanel();
@@ -1069,4 +1093,499 @@ if (document.body) {
   document.addEventListener('DOMContentLoaded', () => {
     observer.observe(document.body, { childList: true, subtree: true });
   });
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// 全自動スカウトマシーン（バッチ処理）
+// 一覧 → プロフィール(NG判定) → スカウト画面(生成→検証→送信) → 一覧 → 次へ
+// 送信は即時実行(確認画面なし・実機確認済み)。送信後は検索一覧に戻る。
+// 送信済みの候補者はサイト側で一覧から自動的に消える。
+// ═══════════════════════════════════════════════════════════
+
+const BATCH_MAX = 20;
+const BATCH_BODY_MIN = 300;
+
+// NG職種(過去経歴に1つでもあればNG)。表記ゆれ込み
+const NG_OCCUPATIONS = [
+  ['パティシエ', 'パティシエール'],
+  ['寿司職人', '鮨職人', 'すし職人'],
+  ['ソムリエ'],
+  ['バーテンダー', 'バーテン'],
+  ['パン職人', 'パン製造', '製パン', 'ブーランジェ'],
+  ['バリスタ']
+];
+
+// 生成メール本文に含まれていたら不合格にする語
+const BODY_FORBIDDEN = [
+  '目に留まりました', '魅力を感じました', '感銘を受けました',
+  'ただ、ここで重要なのは', '先ほどもお伝えしましたが'
+];
+
+let batchAwait = null;   // 'generate' | 'verify' | null
+let batchMail = null;    // 直近の生成メール {subject, body}
+let batchRouted = false; // このページ読み込みでバッチ処理を起動済みか
+
+function zenToHan(s) { return s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
+
+// ── NG判定(ルールベース・Geminiに任せない) ──
+function ngCheck(profileText) {
+  const text = profileText || '';
+  for (const group of NG_OCCUPATIONS) {
+    for (const w of group) {
+      if (text.includes(w)) return `NG職種(${group[0]})`;
+    }
+  }
+  const t = zenToHan(text);
+  let age = null;
+  // 「年齢」ラベルの直後(改行含む8文字以内)の数値
+  let m = t.match(/年齢[^0-9]{0,8}([0-9]{1,3})/);
+  if (m) age = parseInt(m[1], 10);
+  if (age === null) { m = t.match(/([0-9]{2})歳/); if (m) age = parseInt(m[1], 10); }
+  if (age !== null && (age < 15 || age > 99)) age = null;
+
+  let companies = null;
+  // ① 「◯社経験」表記
+  m = t.match(/([0-9]+)社経験/);
+  if (m) companies = parseInt(m[1], 10);
+  // ② 職務経歴の「勤務期間」ラベルの出現数(職歴1件につき1つ)
+  if (companies === null) {
+    const labels = t.match(/勤務期間/g);
+    if (labels && labels.length > 0) companies = labels.length;
+  }
+  // ③ 期間表記(2022/04〜・2022年4月〜)の出現数
+  if (companies === null) {
+    const jobs = t.match(/\d{4}(?:\/\d{1,2}|年\d{1,2}月)\s*[〜~～]/g);
+    if (jobs && jobs.length > 0) companies = jobs.length;
+  }
+
+  if (age === null && companies === null) return '判定不能(年齢と社数の両方が読み取れない)';
+  if (age === null) return '判定不能(年齢が読み取れない)';
+  if (companies === null) return '判定不能(社数が読み取れない)';
+  const tens = Math.floor(age / 10);
+  const tenshoku = companies - 1; // 転職回数 = 社数 - 1
+  if (tenshoku >= tens) return `転職回数NG(${tenshoku}回≧年齢10の位${tens})`;
+  return null;
+}
+
+// ── バッチ状態の保存/取得 ──
+function getBatch() {
+  return new Promise(res => chrome.storage.local.get(['autoBatch'], d => res(d.autoBatch || null)));
+}
+function setBatch(b) {
+  return new Promise(res => chrome.storage.local.set({ autoBatch: b }, res));
+}
+function getSentRegistry() {
+  return new Promise(res => chrome.storage.local.get(['autoSentIds'], d => res(d.autoSentIds || {})));
+}
+function addSentRegistry(id) {
+  return new Promise(res => chrome.storage.local.get(['autoSentIds'], d => {
+    const reg = d.autoSentIds || {};
+    reg[id] = Date.now();
+    chrome.storage.local.set({ autoSentIds: reg }, res);
+  }));
+}
+
+// NG判定(職種・転職回数)は決定的なので記録し、次回以降キューの枠を消費させない
+// (検証不合格のスキップは再挑戦の余地があるため記録しない)
+function getNgRegistry() {
+  return new Promise(res => chrome.storage.local.get(['autoNgIds'], d => res(d.autoNgIds || {})));
+}
+function addNgRegistry(id, reason) {
+  return new Promise(res => chrome.storage.local.get(['autoNgIds'], d => {
+    const reg = d.autoNgIds || {};
+    reg[id] = { reason, at: Date.now() };
+    chrome.storage.local.set({ autoNgIds: reg }, res);
+  }));
+}
+
+function isListPage() { return location.pathname.includes('/member/list'); }
+function isScoutPage() { return location.pathname.includes('/scoutMail/'); }
+
+// ── 進捗トースト(バッチ稼働中は常時表示) ──
+function showBatchToast(msg) {
+  let t = document.getElementById('scout-batch-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'scout-batch-toast';
+    t.style.cssText =
+      'position:fixed;bottom:64px;left:260px;z-index:99999;background:rgba(26,115,232,0.92);' +
+      'color:#fff;border-radius:10px;padding:8px 14px;font-size:12px;max-width:420px;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.display = 'block';
+}
+function hideBatchToast() {
+  const t = document.getElementById('scout-batch-toast');
+  if (t) t.style.display = 'none';
+}
+
+// ── 一覧ページ: 操作パネル(小さな丸ボタン) ──
+function batchMiniBtn(id, label, title, bg) {
+  return `<button id="${id}" title="${title}" style="width:34px;height:34px;border:none;border-radius:50%;` +
+    `cursor:pointer;background:${bg};color:#fff;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.18);">${label}</button>`;
+}
+
+function renderBatchPanel() {
+  if (!isListPage()) return;
+  if (document.getElementById('scout-batch-panel')) return;
+  const p = document.createElement('div');
+  p.id = 'scout-batch-panel';
+  p.style.cssText =
+    'position:fixed;bottom:16px;left:260px;z-index:99999;display:flex;gap:6px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  p.innerHTML =
+    batchMiniBtn('batchDryBtn', '試', 'ドライラン開始(送信しない)', '#5f6368') +
+    batchMiniBtn('batchLiveBtn', '動', '自動スカウト開始(本番・自動送信)', '#1a73e8') +
+    batchMiniBtn('batchStopBtn', '止', '停止', '#b3261e') +
+    batchMiniBtn('batchReportBtn', '報', '前回のレポートを表示', '#188038');
+  document.body.appendChild(p);
+  document.getElementById('batchDryBtn').addEventListener('click', () => startBatch(true));
+  document.getElementById('batchLiveBtn').addEventListener('click', () => startBatch(false));
+  document.getElementById('batchStopBtn').addEventListener('click', requestBatchStop);
+  document.getElementById('batchReportBtn').addEventListener('click', async () => {
+    const last = await new Promise(res => chrome.storage.local.get(['autoLastReport'], d => res(d.autoLastReport || null)));
+    if (last) showReport(last); else showBatchToast('レポートはまだありません');
+  });
+}
+
+async function startBatch(dryRun) {
+  const existing = await getBatch();
+  if (existing && existing.active) { showBatchToast('すでに実行中です。停止するには「止」を押してください'); return; }
+  const sent = await getSentRegistry();
+  const ng = await getNgRegistry();
+  const ids = [];
+  document.querySelectorAll('a[href*="/member/detail/index/"]').forEach(a => {
+    const m = (a.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+    if (m && !ids.includes(m[1]) && !sent[m[1]] && !ng[m[1]]) ids.push(m[1]);
+  });
+  const queue = ids.slice(0, BATCH_MAX);
+  if (!queue.length) { showBatchToast('この一覧に処理対象の候補者が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
+  if (!dryRun && !confirm(`本番モード: 検証を通過したメールは確認なしで自動送信されます。\n${queue.length}件を1件ずつ処理します。よろしいですか？`)) return;
+  if (dryRun && !confirm(`ドライラン: 送信ボタンは押さずに、${queue.length}件の生成と検証だけを行います。よろしいですか？`)) return;
+  await setBatch({ active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false, log: [], startedAt: Date.now() });
+  gotoCurrent();
+}
+
+async function requestBatchStop() {
+  const b = await getBatch();
+  if (b && b.active) {
+    b.stopped = true;
+    await setBatch(b);
+    showBatchToast('停止を受け付けました。処理中の1件が終わり次第停止します');
+  } else {
+    showBatchToast('実行中のバッチはありません');
+    setTimeout(hideBatchToast, 3000);
+  }
+}
+
+async function gotoCurrent() {
+  const b = await getBatch();
+  if (!b || !b.active) return;
+  // 待機中に停止が押されていたら、次の候補へ進まず即終了する
+  if (b.stopped) {
+    b.active = false;
+    await setBatch(b);
+    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
+    showReport(b);
+    return;
+  }
+  location.href = '/shop-pc/member/detail/index/' + b.queue[b.idx];
+}
+
+const BATCH_RESULT_LABEL = {
+  sent: '送信済み', ready: '準備OK(未送信)', skip: 'スキップ', error: 'エラー'
+};
+
+async function recordAndNext(result, reason, mail) {
+  const b = await getBatch();
+  if (!b || !b.active) return;
+  b.log.push({ id: b.queue[b.idx], result, reason: reason || '', mail: mail || null, at: Date.now() });
+  if (result === 'sent') await addSentRegistry(b.queue[b.idx]);
+  b.idx++;
+  b.phase = 'profile';
+  b.regen = 0;
+  b.pendingMail = null;
+  if (b.idx >= b.queue.length || b.stopped) {
+    b.active = false;
+    await setBatch(b);
+    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
+    showReport(b);
+    return;
+  }
+  await setBatch(b);
+  const wait = 5000 + Math.floor(Math.random() * 5000);
+  showBatchToast(`自動スカウト ${b.idx}/${b.queue.length}件 処理済み。${Math.round(wait / 1000)}秒後に次へ...`);
+  setTimeout(gotoCurrent, wait);
+}
+
+// ── ページ種別ごとの処理振り分け(tryInitから毎回呼ばれる。1ページ1回だけ実行) ──
+async function routeBatch() {
+  renderBatchPanel();
+  if (batchRouted) return;
+  // 競合防止: 非同期読み込みの前に同期的にガードを立てる
+  // (tryInitは1ページで複数回呼ばれるため、await中に2回目が通過するのを防ぐ)
+  batchRouted = true;
+  const b = await getBatch();
+  if (!b || !b.active) { batchRouted = false; return; }
+  const target = b.queue[b.idx];
+  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: ID ${target} を処理中...`);
+
+  // 送信後: サイトは検索一覧に戻る(実機確認済み)。スカウト画面のままなら失敗
+  if (b.phase === 'postSend') {
+    if (isScoutPage()) {
+      await recordAndNext('error', '送信後もスカウト画面のまま');
+    } else {
+      await recordAndNext('sent', '', b.pendingMail || null);
+    }
+    return;
+  }
+
+  if (b.phase === 'profile' && getProfilePageMemberId() === target) {
+    setTimeout(() => batchProfileStep(target), 2000);
+    return;
+  }
+  if (b.phase === 'scout' && isScoutPage()) {
+    setTimeout(() => batchScoutStep(target), 1500);
+    return;
+  }
+  // 想定外のページにいる場合はプロフィールへ誘導し直す
+  if (b.phase === 'profile') {
+    setTimeout(gotoCurrent, 1500);
+  }
+}
+
+// ── プロフィール画面: 情報取得→NG判定→スカウト画面へ ──
+async function batchProfileStep(target) {
+  let text = extractCandidateInfo();
+  if (!text || text.length < 200) {
+    await new Promise(r => setTimeout(r, 2500));
+    text = extractCandidateInfo();
+  }
+  if (!text || text.length < 200) { await recordAndNext('skip', 'プロフィール取得失敗'); return; }
+
+  const ng = ngCheck(text);
+  if (ng) {
+    // 決定的なNG(職種・転職回数)は記録して次回以降のキューから除外する
+    if (ng.startsWith('NG職種') || ng.startsWith('転職回数NG')) {
+      await addNgRegistry(target, ng);
+    }
+    await recordAndNext('skip', ng);
+    return;
+  }
+
+  await storeProfile(target, text);
+
+  const btn = [...document.querySelectorAll('a, button, input[type="button"], input[type="submit"]')]
+    .find(el => ((el.tagName === 'INPUT' ? el.value : el.textContent) || '').includes('スカウトメール送信'));
+  if (!btn) { await recordAndNext('error', 'スカウトメール送信ボタンが見つからない'); return; }
+
+  const b = await getBatch();
+  b.phase = 'scout';
+  await setBatch(b);
+  if (btn.tagName === 'A' && btn.href) { location.href = btn.href; } else { btn.click(); }
+}
+
+// ── スカウト画面: 生成を開始 ──
+async function batchScoutStep(target) {
+  const rid = getRecipientMemberId();
+  if (rid !== target) { await recordAndNext('error', `宛先不一致(宛先=${rid})`); return; }
+  const profile = await getStoredProfile(target);
+  if (!profile || !profile.text) { await recordAndNext('error', 'プロフィール未保存'); return; }
+  batchRequestGenerate(profile.text);
+}
+
+async function batchRequestGenerate(profileText) {
+  const b = await getBatch();
+  if (!b || !b.active) return;
+  batchAwait = 'generate';
+  batchMail = null;
+  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: メール生成中...`);
+  const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n候補者情報:\n${profileText}\n\n上記の候補者情報をもとにスカウトメールを作成してください。出力は件名1行＋空行＋本文のみ。ラベルは不要です。`;
+  chrome.runtime.sendMessage({ action: 'openGemini', prompt: fullPrompt, mode: 'generate' });
+}
+
+// ── 生成結果の受け取り(第1層: ルールベース検証 → 入力 → 第2層: AI二次検査) ──
+async function batchHandleGenerated(message) {
+  batchAwait = null;
+  const b = await getBatch();
+  if (!b || !b.active) return;
+
+  let subjectText = message.subject || '';
+  let bodyText = message.body || '';
+  if ((!subjectText || !bodyText) && message.rawText) {
+    const lines = message.rawText.trim().split('\n');
+    if (!subjectText && lines.length > 0) subjectText = lines[0].trim();
+    if (!bodyText && lines.length > 2) {
+      const bodyStart = lines[1].trim() === '' ? 2 : 1;
+      bodyText = lines.slice(bodyStart).join('\n').trim();
+    }
+  }
+  const cleaned = cleanGeminiOutput(subjectText, bodyText);
+  subjectText = cleaned.subject;
+  bodyText = cleaned.body;
+
+  const issues = [];
+  if (subjectText.length < 10 || subjectText.length > 70) issues.push(`件名文字数(${subjectText.length})`);
+  if (bodyText.length < BATCH_BODY_MIN) issues.push(`本文が短い(${bodyText.length}文字)`);
+  if (/\{\{.+?\}\}/.test(subjectText + bodyText)) issues.push('プレースホルダー残り');
+  const contamination = detectEnglishContamination(bodyText);
+  if (contamination) issues.push(`英単語混入(${contamination.trim()})`);
+  const broken = checkFixedPhrases(bodyText);
+  if (broken.length) issues.push(`確定文破損(${broken[0]})`);
+  for (const w of BODY_FORBIDDEN) {
+    if ((subjectText + bodyText).includes(w)) { issues.push(`禁止語句(${w})`); break; }
+  }
+  outer:
+  for (const g of NG_OCCUPATIONS) {
+    for (const w of g) {
+      if (bodyText.includes(w)) { issues.push(`NG職種語の混入(${w})`); break outer; }
+    }
+  }
+
+  if (issues.length) { await batchRetryOrSkip(b, issues.join(' / '), { subject: subjectText, body: bodyText }); return; }
+
+  // フォーム入力
+  let result = fillForm(subjectText, bodyText);
+  if (!result.subjectFilled || !result.bodyFilled) {
+    const mr = await fillFormViaMainWorld(result.subjectFilled ? '' : subjectText, result.bodyFilled ? '' : bodyText);
+    result.subjectFilled = result.subjectFilled || mr.subjectFilled;
+    result.bodyFilled = result.bodyFilled || mr.bodyFilled;
+  }
+  if (!result.subjectFilled || !result.bodyFilled) {
+    await recordAndNext('error', 'フォーム入力失敗', { subject: subjectText, body: bodyText });
+    return;
+  }
+
+  batchMail = { subject: subjectText, body: bodyText };
+  batchAwait = 'verify';
+  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: AI二次検査中...`);
+  chrome.runtime.sendMessage({ action: 'openGemini', mode: 'verify', prompt: buildVerifyPrompt(subjectText, bodyText) });
+}
+
+function buildVerifyPrompt(subject, body) {
+  return `あなたは日本語ビジネスメールの校閲担当です。以下のスカウトメールに明確な不備がないか検査してください。
+
+検査観点(これ以外は指摘しない):
+- 誤字・脱字(例:「出出店」「有気休暇」のような文字の重複・誤変換)
+- 文の途切れ・不完全な文
+- 意味の通らない文
+- 敬語の明らかな破綻
+- 日本語文中への英単語の混入(OJT等の固有名詞は除く)
+- プレースホルダーらしき記号の残り
+
+出力形式(厳守):
+- 不備がなければ「PASS」とだけ出力する
+- 不備があれば1行目に「FAIL」、2行目以降に不備の箇所を1行ずつ列挙する
+- 文体の好み・改善提案・感想は出力しない
+
+---
+件名: ${subject}
+
+本文:
+${body}`;
+}
+
+// ── AI二次検査の結果(第3層: 合格→送信/ドライラン記録、不合格→再生成1回→スキップ) ──
+async function batchHandleVerify(message) {
+  batchAwait = null;
+  const b = await getBatch();
+  if (!b || !b.active) return;
+  const raw = (message.rawText || message.subject || '').trim();
+  const firstLine = (raw.split('\n')[0] || '').trim();
+  const pass = /^PASS/i.test(firstLine);
+
+  if (!pass) {
+    const reason = raw.split('\n').slice(0, 4).join(' / ').slice(0, 200) || 'AI検査FAIL(理由不明)';
+    await batchRetryOrSkip(b, `AI検査不合格: ${reason}`, batchMail);
+    return;
+  }
+
+  if (b.dryRun) { await recordAndNext('ready', 'ドライラン(送信せず)', batchMail); return; }
+
+  // 送信(即時送信・確認画面なし。送信後は検索一覧へ戻る)
+  b.phase = 'postSend';
+  b.pendingMail = batchMail;
+  await setBatch(b);
+  const btn = document.querySelector('#btn_conf, input[type="submit"][name="conf"]');
+  if (!btn) {
+    const b2 = await getBatch();
+    b2.phase = 'scout';
+    await setBatch(b2);
+    await recordAndNext('error', '送信ボタンが見つからない', batchMail);
+    return;
+  }
+  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: 送信します...`);
+  btn.click();
+  // 15秒たっても画面遷移しない場合は失敗として次へ
+  setTimeout(async () => {
+    const cur = await getBatch();
+    if (cur && cur.active && cur.phase === 'postSend' && isScoutPage()) {
+      await recordAndNext('error', '送信後に画面遷移しない');
+    }
+  }, 15000);
+}
+
+async function batchRetryOrSkip(b, reason, mail) {
+  if (b.regen < 1) {
+    b.regen++;
+    await setBatch(b);
+    showBatchToast(`検証不合格のため再生成します(${String(reason).slice(0, 80)})`);
+    const profile = await getStoredProfile(b.queue[b.idx]);
+    if (profile && profile.text) { batchRequestGenerate(profile.text); return; }
+  }
+  await recordAndNext('skip', `検証不合格: ${reason}`, mail);
+}
+
+async function batchHandleError(err) {
+  const kind = batchAwait;
+  batchAwait = null;
+  const b = await getBatch();
+  if (!b || !b.active) return;
+  await batchRetryOrSkip(b, `${kind === 'verify' ? 'AI検査' : '生成'}エラー: ${String(err).slice(0, 120)}`, batchMail);
+}
+
+// ── 完了レポート ──
+function showReport(b) {
+  hideBatchToast();
+  const old = document.getElementById('scout-batch-report');
+  if (old) old.remove();
+
+  const counts = { sent: 0, ready: 0, skip: 0, error: 0 };
+  b.log.forEach(e => { if (counts[e.result] !== undefined) counts[e.result]++; });
+  const lines = b.log.map((e, i) =>
+    `${i + 1}. ID ${e.id}: ${BATCH_RESULT_LABEL[e.result] || e.result}${e.reason ? ` - ${e.reason}` : ''}`);
+  const mailDump = b.log.filter(e => e.mail).map(e =>
+    `\n===== ID ${e.id} (${BATCH_RESULT_LABEL[e.result] || e.result}) =====\n件名: ${e.mail.subject}\n\n${e.mail.body}`).join('\n');
+  const summary =
+    `自動スカウト結果${b.dryRun ? '【ドライラン】' : ''}\n` +
+    `送信:${counts.sent}件 / 準備OK:${counts.ready}件 / スキップ:${counts.skip}件 / エラー:${counts.error}件\n\n` +
+    lines.join('\n') + '\n' + mailDump;
+
+  const el = document.createElement('div');
+  el.id = 'scout-batch-report';
+  el.style.cssText =
+    'position:fixed;top:40px;left:50%;transform:translateX(-50%);z-index:100000;background:#fff;' +
+    'border:2px solid #1a73e8;border-radius:12px;padding:16px;width:640px;max-width:90vw;max-height:70vh;' +
+    'overflow:auto;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-size:12px;color:#222;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  const pre = document.createElement('pre');
+  pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;margin:0 0 12px;';
+  pre.textContent = summary;
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = 'コピー';
+  copyBtn.style.cssText = 'margin-right:8px;padding:6px 16px;border:none;border-radius:6px;background:#1a73e8;color:#fff;cursor:pointer;';
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(summary).then(() => { copyBtn.textContent = 'コピーしました'; });
+  });
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '閉じる';
+  closeBtn.style.cssText = 'padding:6px 16px;border:none;border-radius:6px;background:#5f6368;color:#fff;cursor:pointer;';
+  closeBtn.addEventListener('click', () => el.remove());
+  el.appendChild(pre);
+  el.appendChild(copyBtn);
+  el.appendChild(closeBtn);
+  document.body.appendChild(el);
 }

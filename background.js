@@ -90,7 +90,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // ─── グルメキャリーからの生成リクエスト ───
   if (message.action === 'openGemini') {
     console.log('openGeminiリクエスト受信');
-    pendingRequest = { sourceTabId: sender.tab.id, prompt: message.prompt };
+    pendingRequest = { sourceTabId: sender.tab.id, prompt: message.prompt, mode: message.mode };
     promptSent = false;
     openOrReuseGemini(sender.tab.windowId);
     sendResponse({ status: 'ok' });
@@ -110,13 +110,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // ─── Geminiからの回答受信 ───
   if (message.action === 'geminiResponse') {
     if (pendingRequest) {
-      const { sourceTabId } = pendingRequest;
+      const { sourceTabId, mode } = pendingRequest;
       pendingRequest = null;
       sendToGourmet(sourceTabId, {
         action: 'showResult',
         subject: message.subject,
         body: message.body,
-        rawText: message.rawText
+        rawText: message.rawText,
+        mode: mode
       });
       chrome.tabs.update(sourceTabId, { active: true });
     }
@@ -126,9 +127,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // ─── Geminiエラー ───
   if (message.action === 'geminiError') {
     if (pendingRequest) {
-      const { sourceTabId } = pendingRequest;
+      const { sourceTabId, mode } = pendingRequest;
       pendingRequest = null;
-      sendToGourmet(sourceTabId, { action: 'showError', error: message.error });
+      sendToGourmet(sourceTabId, { action: 'showError', error: message.error, mode: mode });
     }
     return true;
   }
