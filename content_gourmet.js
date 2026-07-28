@@ -1388,10 +1388,19 @@ async function finishBatch(b, msg) {
   showReport(b);
 }
 
+// メール全文は直近この件数分だけ保持する
+// (件数無制限で回すため、全件保持するとstorage超過とレポート肥大を招く)
+const BATCH_KEEP_MAILS = 40;
+
 async function recordAndNext(result, reason, mail) {
   const b = await getBatch();
   if (!b || !b.active) return;
   b.log.push({ id: b.queue[b.idx], result, reason: reason || '', mail: mail || null, at: Date.now() });
+  // 古いエントリのメール本文を落とす(結果と理由の行は全件残す)
+  const withMail = b.log.filter(e => e.mail);
+  if (withMail.length > BATCH_KEEP_MAILS) {
+    withMail.slice(0, withMail.length - BATCH_KEEP_MAILS).forEach(e => { e.mail = null; e.mailTrimmed = true; });
+  }
   if (result === 'sent') await addSentRegistry(b.queue[b.idx]);
   b.idx++;
   b.phase = 'profile';
@@ -1408,7 +1417,8 @@ async function recordAndNext(result, reason, mail) {
     b.phase = 'refill';
     await setBatch(b);
     showBatchToast(`${b.log.length}件 処理済み。一覧に戻って次の候補者を探します...`);
-    setTimeout(() => { location.href = b.listUrl; }, wait);
+    const url = b.listUrl || '/shop-pc/member/list';
+    setTimeout(() => { location.href = url; }, wait);
     return;
   }
 
@@ -1418,10 +1428,22 @@ async function recordAndNext(result, reason, mail) {
 }
 
 // ── 一覧ページでキューを補充する。無ければ次ページへ進む ──
+let refillRetry = 0;
 async function batchRefillStep() {
   const b = await getBatch();
   if (!b || !b.active) return;
   if (b.stopped) { await finishBatch(b); return; }
+
+  // 描画待ち: 候補者リンクが1つも無い場合はまだ読み込み中の可能性が高い。
+  // ここで「空ページ」と誤判定すると候補者を取りこぼすため、数回リトライする
+  const anyLink = document.querySelector('a[href*="/member/detail/index/"]');
+  if (!anyLink && refillRetry < 4) {
+    refillRetry++;
+    showBatchToast(`一覧の読み込みを待っています... (${refillRetry}/4)`);
+    setTimeout(batchRefillStep, 2000);
+    return;
+  }
+  refillRetry = 0;
 
   // このバッチで既に処理した候補者は除外(送信済み・NG済みはレジストリ側で除外)
   const fresh = await collectIdsOnPage(b.queue);
@@ -1483,7 +1505,9 @@ async function routeBatch() {
     if (isListPage()) {
       setTimeout(batchRefillStep, 1500);
     } else {
-      setTimeout(() => { location.href = b.listUrl; }, 1500);
+      // listUrlが無い場合(旧バージョンの残存状態など)は検索一覧トップへ戻す
+      const url = b.listUrl || '/shop-pc/member/list';
+      setTimeout(() => { location.href = url; }, 1500);
     }
     return;
   }
@@ -1710,10 +1734,14 @@ function showReport(b) {
     `${i + 1}. ID ${e.id}: ${BATCH_RESULT_LABEL[e.result] || e.result}${e.reason ? ` - ${e.reason}` : ''}`);
   const mailDump = b.log.filter(e => e.mail).map(e =>
     `\n===== ID ${e.id} (${BATCH_RESULT_LABEL[e.result] || e.result}) =====\n件名: ${e.mail.subject}\n\n${e.mail.body}`).join('\n');
+  const trimmed = b.log.filter(e => e.mailTrimmed).length;
+  const trimNote = trimmed
+    ? `\n\n※ メール全文は直近${BATCH_KEEP_MAILS}件のみ表示しています（古い${trimmed}件は結果のみ）\n`
+    : '';
   const summary =
     `自動スカウト結果${b.dryRun ? '【ドライラン】' : ''}\n` +
     `送信:${counts.sent}件 / 準備OK:${counts.ready}件 / スキップ:${counts.skip}件 / エラー:${counts.error}件\n\n` +
-    lines.join('\n') + '\n' + mailDump;
+    lines.join('\n') + trimNote + '\n' + mailDump;
 
   const el = document.createElement('div');
   el.id = 'scout-batch-report';
