@@ -1103,7 +1103,9 @@ if (document.body) {
 // 送信済みの候補者はサイト側で一覧から自動的に消える。
 // ═══════════════════════════════════════════════════════════
 
-const BATCH_MAX = 20;
+// 件数上限なし。「止」を押すか、候補者が尽きるまで動き続ける
+const BATCH_MAX = 0;              // 0 = 1ページあたりの取得件数を制限しない
+const BATCH_MAX_EMPTY_PAGES = 3;  // 新規候補ゼロのページが続いたら候補者が尽きたと判断
 const BATCH_BODY_MIN = 300;
 
 // NG職種(過去経歴に1つでもあればNG)。表記ゆれ込み
@@ -1222,6 +1224,42 @@ function hideBatchToast() {
   if (t) t.style.display = 'none';
 }
 
+// ── 進捗カウンター(バッチ稼働中は全ページで常時表示) ──
+// 途中でも「何件スカウトしたか」が一目で分かるようにする
+function showBatchCounter(b) {
+  if (!b) return;
+  const counts = { sent: 0, ready: 0, skip: 0, error: 0 };
+  (b.log || []).forEach(e => { if (counts[e.result] !== undefined) counts[e.result]++; });
+  const done = (b.log || []).length;
+  const mainLabel = b.dryRun ? '準備OK' : '送信';
+  const mainCount = b.dryRun ? counts.ready : counts.sent;
+
+  let el = document.getElementById('scout-batch-counter');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'scout-batch-counter';
+    el.style.cssText =
+      'position:fixed;bottom:104px;left:260px;z-index:99999;background:#fff;' +
+      'border:2px solid #1a73e8;border-radius:10px;padding:8px 14px;' +
+      'box-shadow:0 3px 12px rgba(0,0,0,0.2);color:#202124;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+    document.body.appendChild(el);
+  }
+  el.style.display = 'block';
+  el.innerHTML =
+    `<div style="font-size:11px;color:#5f6368;margin-bottom:2px;">` +
+    `自動スカウト稼働中${b.dryRun ? '（ドライラン）' : ''}</div>` +
+    `<div style="font-size:22px;font-weight:bold;color:#1a73e8;line-height:1.1;">` +
+    `${mainLabel} ${mainCount}<span style="font-size:13px;font-weight:normal;">件</span></div>` +
+    `<div style="font-size:11px;color:#5f6368;margin-top:3px;">` +
+    `処理済み ${done}件（スキップ ${counts.skip} / エラー ${counts.error}）</div>`;
+}
+
+function hideBatchCounter() {
+  const el = document.getElementById('scout-batch-counter');
+  if (el) el.style.display = 'none';
+}
+
 // ── 一覧ページ: 操作パネル(小さな丸ボタン) ──
 function batchMiniBtn(id, label, title, bg) {
   return `<button id="${id}" title="${title}" style="width:34px;height:34px;border:none;border-radius:50%;` +
@@ -1251,21 +1289,53 @@ function renderBatchPanel() {
   });
 }
 
-async function startBatch(dryRun) {
-  const existing = await getBatch();
-  if (existing && existing.active) { showBatchToast('すでに実行中です。停止するには「止」を押してください'); return; }
+// ── 一覧ページから未処理の候補者IDを収集 ──
+async function collectIdsOnPage(excludeIds) {
   const sent = await getSentRegistry();
   const ng = await getNgRegistry();
   const ids = [];
   document.querySelectorAll('a[href*="/member/detail/index/"]').forEach(a => {
     const m = (a.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
-    if (m && !ids.includes(m[1]) && !sent[m[1]] && !ng[m[1]]) ids.push(m[1]);
+    if (!m) return;
+    const id = m[1];
+    if (ids.includes(id) || sent[id] || ng[id]) return;
+    if (excludeIds && excludeIds.includes(id)) return;
+    ids.push(id);
   });
-  const queue = ids.slice(0, BATCH_MAX);
+  return ids;
+}
+
+// ── 一覧の「次へ」リンクを探す ──
+function findNextPageLink() {
+  const links = [...document.querySelectorAll('a')].filter(a => {
+    if (a.closest('#scout-batch-panel')) return false;
+    const t = (a.textContent || '').trim();
+    return t === '次へ' || t === '次へ >' || t === '>' || t === '次';
+  });
+  // hrefを持つ有効なリンクのみ(最終ページでは無効化されていることがある)
+  return links.find(a => {
+    const href = a.getAttribute('href') || '';
+    return href && href !== '#' && !a.classList.contains('disabled');
+  }) || null;
+}
+
+async function startBatch(dryRun) {
+  const existing = await getBatch();
+  if (existing && existing.active) { showBatchToast('すでに実行中です。停止するには「止」を押してください'); return; }
+  let queue = await collectIdsOnPage(null);
+  if (BATCH_MAX > 0) queue = queue.slice(0, BATCH_MAX);
   if (!queue.length) { showBatchToast('この一覧に処理対象の候補者が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
-  if (!dryRun && !confirm(`本番モード: 検証を通過したメールは確認なしで自動送信されます。\n${queue.length}件を1件ずつ処理します。よろしいですか？`)) return;
-  if (dryRun && !confirm(`ドライラン: 送信ボタンは押さずに、${queue.length}件の生成と検証だけを行います。よろしいですか？`)) return;
-  await setBatch({ active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false, log: [], startedAt: Date.now() });
+  const limitNote =
+    `このページの${queue.length}件から開始し、終わり次第ページを進めて続けます。\n` +
+    `件数の上限はありません。「止」を押すまで、または候補者がいなくなるまで動き続けます。`;
+  if (!dryRun && !confirm(`本番モード: 検証を通過したメールは確認なしで自動送信されます。\n${limitNote}\nよろしいですか？`)) return;
+  if (dryRun && !confirm(`ドライラン: 送信ボタンは押さずに生成と検証だけを行います。\n${limitNote}\nよろしいですか？`)) return;
+  await setBatch({
+    active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false,
+    log: [], startedAt: Date.now(),
+    listUrl: location.href, emptyPages: 0
+  });
+  showBatchCounter(await getBatch());
   gotoCurrent();
 }
 
@@ -1277,12 +1347,8 @@ async function requestBatchStop() {
     clearTimeout(batchWatchdog);
     batchAwait = null;
     batchRouted = false;
-    b.active = false;
     b.stopped = true;
-    await setBatch(b);
-    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
-    showReport(b);
-    showBatchToast('停止しました');
+    await finishBatch(b, '停止しました');
   } else {
     showBatchToast('実行中のバッチはありません');
     setTimeout(hideBatchToast, 3000);
@@ -1305,19 +1371,22 @@ async function gotoCurrent() {
   const b = await getBatch();
   if (!b || !b.active) return;
   // 待機中に停止が押されていたら、次の候補へ進まず即終了する
-  if (b.stopped) {
-    b.active = false;
-    await setBatch(b);
-    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
-    showReport(b);
-    return;
-  }
+  if (b.stopped) { await finishBatch(b); return; }
   location.href = '/shop-pc/member/detail/index/' + b.queue[b.idx];
 }
 
 const BATCH_RESULT_LABEL = {
   sent: '送信済み', ready: '準備OK(未送信)', skip: 'スキップ', error: 'エラー'
 };
+
+async function finishBatch(b, msg) {
+  b.active = false;
+  await setBatch(b);
+  await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
+  hideBatchCounter();
+  if (msg) showBatchToast(msg);
+  showReport(b);
+}
 
 async function recordAndNext(result, reason, mail) {
   const b = await getBatch();
@@ -1328,17 +1397,63 @@ async function recordAndNext(result, reason, mail) {
   b.phase = 'profile';
   b.regen = 0;
   b.pendingMail = null;
-  if (b.idx >= b.queue.length || b.stopped) {
-    b.active = false;
+
+  showBatchCounter(b);
+  if (b.stopped) { await finishBatch(b); return; }
+
+  const wait = 5000 + Math.floor(Math.random() * 5000);
+
+  // キューを使い切ったら一覧へ戻って補充する(件数上限なし)
+  if (b.idx >= b.queue.length) {
+    b.phase = 'refill';
     await setBatch(b);
-    await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
-    showReport(b);
+    showBatchToast(`${b.log.length}件 処理済み。一覧に戻って次の候補者を探します...`);
+    setTimeout(() => { location.href = b.listUrl; }, wait);
     return;
   }
+
   await setBatch(b);
-  const wait = 5000 + Math.floor(Math.random() * 5000);
-  showBatchToast(`自動スカウト ${b.idx}/${b.queue.length}件 処理済み。${Math.round(wait / 1000)}秒後に次へ...`);
+  showBatchToast(`自動スカウト ${b.log.length}件 処理済み。${Math.round(wait / 1000)}秒後に次へ...`);
   setTimeout(gotoCurrent, wait);
+}
+
+// ── 一覧ページでキューを補充する。無ければ次ページへ進む ──
+async function batchRefillStep() {
+  const b = await getBatch();
+  if (!b || !b.active) return;
+  if (b.stopped) { await finishBatch(b); return; }
+
+  // このバッチで既に処理した候補者は除外(送信済み・NG済みはレジストリ側で除外)
+  const fresh = await collectIdsOnPage(b.queue);
+
+  if (fresh.length) {
+    b.queue = b.queue.concat(fresh);
+    b.phase = 'profile';
+    b.emptyPages = 0;
+    b.listUrl = location.href;
+    await setBatch(b);
+    showBatchToast(`このページで${fresh.length}件の候補者を追加。処理を続けます...`);
+    setTimeout(gotoCurrent, 1500);
+    return;
+  }
+
+  // このページに新規候補者がいない → 次ページへ
+  b.emptyPages = (b.emptyPages || 0) + 1;
+  if (b.emptyPages >= BATCH_MAX_EMPTY_PAGES) {
+    await finishBatch(b, '対象の候補者がいなくなったため終了しました');
+    return;
+  }
+  const next = findNextPageLink();
+  if (!next) {
+    await finishBatch(b, '最終ページまで処理したため終了しました');
+    return;
+  }
+  await setBatch(b); // phaseは'refill'のまま
+  showBatchToast('このページは処理済みです。次のページへ進みます...');
+  setTimeout(() => {
+    const href = next.getAttribute('href');
+    if (href && href !== '#') { location.href = next.href; } else { next.click(); }
+  }, 2000);
 }
 
 // ── ページ種別ごとの処理振り分け(tryInitから毎回呼ばれる。1ページ1回だけ実行) ──
@@ -1349,9 +1464,9 @@ async function routeBatch() {
   // (tryInitは1ページで複数回呼ばれるため、await中に2回目が通過するのを防ぐ)
   batchRouted = true;
   const b = await getBatch();
-  if (!b || !b.active) { batchRouted = false; return; }
+  if (!b || !b.active) { batchRouted = false; hideBatchCounter(); return; }
+  showBatchCounter(b);
   const target = b.queue[b.idx];
-  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: ID ${target} を処理中...`);
 
   // 送信後: サイトは検索一覧に戻る(実機確認済み)。スカウト画面のままなら失敗
   if (b.phase === 'postSend') {
@@ -1362,6 +1477,18 @@ async function routeBatch() {
     }
     return;
   }
+
+  // キュー補充フェーズ: 一覧ページで次の候補者を集める / 次ページへ進む
+  if (b.phase === 'refill') {
+    if (isListPage()) {
+      setTimeout(batchRefillStep, 1500);
+    } else {
+      setTimeout(() => { location.href = b.listUrl; }, 1500);
+    }
+    return;
+  }
+
+  showBatchToast(`自動スカウト: ID ${target} を処理中...`);
 
   if (b.phase === 'profile' && getProfilePageMemberId() === target) {
     setTimeout(() => batchProfileStep(target), 2000);
@@ -1423,7 +1550,7 @@ async function batchRequestGenerate(profileText) {
   batchAwait = 'generate';
   batchMail = null;
   armWatchdog('generate');
-  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: メール生成中...`);
+  showBatchToast(`自動スカウト ${b.log.length + 1}件目: メール生成中...`);
   const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n候補者情報:\n${profileText}\n\n上記の候補者情報をもとにスカウトメールを作成してください。出力は件名1行＋空行＋本文のみ。ラベルは不要です。`;
   chrome.runtime.sendMessage({ action: 'openGemini', prompt: fullPrompt, mode: 'generate' });
 }
@@ -1484,7 +1611,7 @@ async function batchHandleGenerated(message) {
   batchMail = { subject: subjectText, body: bodyText };
   batchAwait = 'verify';
   armWatchdog('verify');
-  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: AI二次検査中...`);
+  showBatchToast(`自動スカウト ${b.log.length + 1}件目: AI二次検査中...`);
   chrome.runtime.sendMessage({ action: 'openGemini', mode: 'verify', prompt: buildVerifyPrompt(subjectText, bodyText) });
 }
 
@@ -1541,7 +1668,7 @@ async function batchHandleVerify(message) {
     await recordAndNext('error', '送信ボタンが見つからない', batchMail);
     return;
   }
-  showBatchToast(`自動スカウト ${b.idx + 1}/${b.queue.length}: 送信します...`);
+  showBatchToast(`自動スカウト ${b.log.length + 1}件目: 送信します...`);
   btn.click();
   // 15秒たっても画面遷移しない場合は失敗として次へ
   setTimeout(async () => {
