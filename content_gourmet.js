@@ -1118,6 +1118,14 @@ const NG_OCCUPATIONS = [
   ['バリスタ']
 ];
 
+// NGワード(職種以外。プロフィールに含まれていたら対象外)
+// 画面の「語」ボタンから追加した語はこれに上乗せされる
+const NG_KEYWORDS = [
+  ['特定技能'],
+  ['日本語能力', '日本語検定'],
+  ['JLPT', 'ｊｌｐｔ']
+];
+
 // 生成メール本文に含まれていたら不合格にする語
 const BODY_FORBIDDEN = [
   '目に留まりました', '魅力を感じました', '感銘を受けました',
@@ -1131,11 +1139,18 @@ let batchRouted = false; // このページ読み込みでバッチ処理を起�
 function zenToHan(s) { return s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
 
 // ── NG判定(ルールベース・Geminiに任せない) ──
-function ngCheck(profileText) {
+// extraWords: 画面から追加したNGワード(1語1エントリ)
+function ngCheck(profileText, extraWords) {
   const text = profileText || '';
   for (const group of NG_OCCUPATIONS) {
     for (const w of group) {
       if (text.includes(w)) return `NG職種(${group[0]})`;
+    }
+  }
+  const keywordGroups = NG_KEYWORDS.concat((extraWords || []).map(w => [w]));
+  for (const group of keywordGroups) {
+    for (const w of group) {
+      if (w && text.includes(w)) return `NGワード(${group[0]})`;
     }
   }
   const t = zenToHan(text);
@@ -1279,8 +1294,10 @@ function renderBatchPanel() {
     batchMiniBtn('batchLiveBtn', '動', '自動スカウト開始(本番・自動送信)', '#1a73e8') +
     batchMiniBtn('batchResumeBtn', '再', '中断した処理を再開(スリープ復帰後など)', '#e8710a') +
     batchMiniBtn('batchStopBtn', '止', '停止', '#b3261e') +
-    batchMiniBtn('batchReportBtn', '報', '前回のレポートを表示', '#188038');
+    batchMiniBtn('batchReportBtn', '報', '前回のレポートを表示', '#188038') +
+    batchMiniBtn('batchNgWordBtn', '語', '対象外にするNGワードの設定', '#7b1fa2');
   document.body.appendChild(p);
+  document.getElementById('batchNgWordBtn').addEventListener('click', showNgWordEditor);
   document.getElementById('batchDryBtn').addEventListener('click', () => startBatch(true));
   document.getElementById('batchLiveBtn').addEventListener('click', () => startBatch(false));
   document.getElementById('batchResumeBtn').addEventListener('click', resumeBatch);
@@ -1288,6 +1305,60 @@ function renderBatchPanel() {
   document.getElementById('batchReportBtn').addEventListener('click', async () => {
     const last = await new Promise(res => chrome.storage.local.get(['autoLastReport'], d => res(d.autoLastReport || null)));
     if (last) showReport(last); else showBatchToast('レポートはまだありません');
+  });
+}
+
+// ── 追加NGワードの保存/取得(画面から編集できる) ──
+function getCustomNgWords() {
+  return new Promise(res => chrome.storage.local.get(['customNgWords'], d => res(d.customNgWords || [])));
+}
+function setCustomNgWords(words) {
+  return new Promise(res => chrome.storage.local.set({ customNgWords: words }, res));
+}
+
+// ── NGワード編集ダイアログ ──
+async function showNgWordEditor() {
+  const old = document.getElementById('scout-ngword-editor');
+  if (old) old.remove();
+
+  const custom = await getCustomNgWords();
+  const builtinOcc = NG_OCCUPATIONS.map(g => g.join('／')).join('、');
+  const builtinKw = NG_KEYWORDS.map(g => g.join('／')).join('、');
+
+  const el = document.createElement('div');
+  el.id = 'scout-ngword-editor';
+  el.style.cssText =
+    'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:100000;background:#fff;' +
+    'border:2px solid #1a73e8;border-radius:12px;padding:18px;width:560px;max-width:92vw;' +
+    'box-shadow:0 8px 32px rgba(0,0,0,0.3);color:#202124;font-size:13px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  el.innerHTML =
+    `<div style="font-size:15px;font-weight:bold;margin-bottom:10px;">対象外にするNGワードの設定</div>` +
+    `<div style="font-size:12px;color:#5f6368;line-height:1.7;margin-bottom:10px;">` +
+    `プロフィールにこの語が含まれる候補者には、スカウトを送りません。<br>` +
+    `<b>1行に1語</b>ずつ書いてください。空行は無視されます。</div>` +
+    `<textarea id="ngWordArea" rows="9" style="width:100%;box-sizing:border-box;padding:8px;` +
+    `border:1px solid #dadce0;border-radius:6px;font-size:13px;line-height:1.6;` +
+    `font-family:inherit;resize:vertical;">${custom.join('\n')}</textarea>` +
+    `<div style="font-size:11px;color:#5f6368;margin-top:10px;line-height:1.6;">` +
+    `<b>もとから設定されているNG（変更不要）</b><br>` +
+    `職種: ${builtinOcc}<br>キーワード: ${builtinKw}<br>` +
+    `そのほか「転職回数が年齢の10の位以上」も自動で対象外になります。</div>` +
+    `<div style="margin-top:14px;text-align:right;">` +
+    `<button id="ngWordCancel" style="padding:7px 18px;margin-right:8px;border:none;border-radius:6px;` +
+    `background:#5f6368;color:#fff;cursor:pointer;font-size:13px;">キャンセル</button>` +
+    `<button id="ngWordSave" style="padding:7px 22px;border:none;border-radius:6px;` +
+    `background:#1a73e8;color:#fff;cursor:pointer;font-size:13px;font-weight:bold;">保存</button></div>`;
+  document.body.appendChild(el);
+
+  document.getElementById('ngWordCancel').addEventListener('click', () => el.remove());
+  document.getElementById('ngWordSave').addEventListener('click', async () => {
+    const words = document.getElementById('ngWordArea').value
+      .split('\n').map(s => s.trim()).filter(s => s.length > 0);
+    await setCustomNgWords(words);
+    el.remove();
+    showBatchToast(`NGワードを保存しました（追加分 ${words.length}語）`);
+    setTimeout(hideBatchToast, 4000);
   });
 }
 
@@ -1570,10 +1641,10 @@ async function batchProfileStep(target) {
   }
   if (!text || text.length < 200) { await recordAndNext('skip', 'プロフィール取得失敗'); return; }
 
-  const ng = ngCheck(text);
+  const ng = ngCheck(text, await getCustomNgWords());
   if (ng) {
-    // 決定的なNG(職種・転職回数)は記録して次回以降のキューから除外する
-    if (ng.startsWith('NG職種') || ng.startsWith('転職回数NG')) {
+    // 決定的なNG(職種・NGワード・転職回数)は記録して次回以降のキューから除外する
+    if (ng.startsWith('NG職種') || ng.startsWith('NGワード') || ng.startsWith('転職回数NG')) {
       await addNgRegistry(target, ng);
     }
     await recordAndNext('skip', ng);
