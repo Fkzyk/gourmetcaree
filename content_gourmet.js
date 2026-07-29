@@ -1277,11 +1277,13 @@ function renderBatchPanel() {
   p.innerHTML =
     batchMiniBtn('batchDryBtn', '試', 'ドライラン開始(送信しない)', '#5f6368') +
     batchMiniBtn('batchLiveBtn', '動', '自動スカウト開始(本番・自動送信)', '#1a73e8') +
+    batchMiniBtn('batchResumeBtn', '再', '中断した処理を再開(スリープ復帰後など)', '#e8710a') +
     batchMiniBtn('batchStopBtn', '止', '停止', '#b3261e') +
     batchMiniBtn('batchReportBtn', '報', '前回のレポートを表示', '#188038');
   document.body.appendChild(p);
   document.getElementById('batchDryBtn').addEventListener('click', () => startBatch(true));
   document.getElementById('batchLiveBtn').addEventListener('click', () => startBatch(false));
+  document.getElementById('batchResumeBtn').addEventListener('click', resumeBatch);
   document.getElementById('batchStopBtn').addEventListener('click', requestBatchStop);
   document.getElementById('batchReportBtn').addEventListener('click', async () => {
     const last = await new Promise(res => chrome.storage.local.get(['autoLastReport'], d => res(d.autoLastReport || null)));
@@ -1522,8 +1524,39 @@ async function routeBatch() {
     setTimeout(() => batchScoutStep(target), 1500);
     return;
   }
-  // 想定外のページにいる場合はプロフィールへ誘導し直す
-  if (b.phase === 'profile') {
+  // 想定外のページにいる場合は、現在の候補者をプロフィールからやり直す
+  // (スリープ復帰・手動でのページ移動などからの自動復帰)
+  if (b.phase === 'profile' || b.phase === 'scout') {
+    b.phase = 'profile';
+    b.regen = 0;
+    await setBatch(b);
+    showBatchToast('処理を再開します...');
+    setTimeout(gotoCurrent, 1500);
+  }
+}
+
+// ── 中断した処理を再開する(スリープ復帰・固まった場合) ──
+async function resumeBatch() {
+  const b = await getBatch();
+  if (!b || !b.active) {
+    showBatchToast('中断中の処理はありません。開始するには「動」を押してください');
+    setTimeout(hideBatchToast, 4000);
+    return;
+  }
+  // 応答待ちなどの一時状態をリセットし、現在の候補者からやり直す
+  clearTimeout(batchWatchdog);
+  batchAwait = null;
+  batchMail = null;
+  batchRouted = false;
+  b.regen = 0;
+  if (b.phase === 'scout' || b.phase === 'postSend') b.phase = 'profile';
+  await setBatch(b);
+  showBatchCounter(b);
+  showBatchToast(`${b.log.length}件まで完了しています。続きから再開します...`);
+  if (b.phase === 'refill') {
+    const url = b.listUrl || '/shop-pc/member/list';
+    setTimeout(() => { location.href = url; }, 1500);
+  } else {
     setTimeout(gotoCurrent, 1500);
   }
 }
