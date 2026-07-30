@@ -1292,15 +1292,24 @@ function showBatchCounter(b) {
     `<div style="font-size:11px;color:#5f6368;margin-bottom:2px;">` +
     `自動スカウト稼働中${b.dryRun ? '（ドライラン）' : ''}</div>` +
     `<div style="font-size:22px;font-weight:bold;color:#1a73e8;line-height:1.1;">` +
+    `<span style="font-size:12px;font-weight:normal;color:#5f6368;">今回 </span>` +
     `${mainLabel} ${mainCount}<span style="font-size:13px;font-weight:normal;">件</span></div>` +
-    `<div style="font-size:11px;color:#5f6368;margin:3px 0 8px;">` +
+    `<div style="font-size:11px;color:#5f6368;margin:3px 0 2px;">` +
     `処理済み ${done}件（スキップ ${counts.skip} / エラー ${counts.error}）</div>` +
+    // バッチをやり直しても消えない累計。「動」で0に戻る今回分と区別する
+    `<div style="font-size:11px;color:#202124;margin-bottom:8px;padding-top:4px;` +
+    `border-top:1px dashed #dadce0;">本日の送信 <b id="scoutCounterToday">…</b>件</div>` +
     // どの画面からでも止められるよう、カウンターに停止ボタンを持たせる
     `<button id="scoutCounterStopBtn" style="width:100%;padding:6px 0;border:none;border-radius:6px;` +
     `background:#b3261e;color:#fff;cursor:pointer;font-size:12px;font-weight:bold;">■ 停止</button>`;
   // innerHTMLで作り直すため、毎回ハンドラを付け直す
   const stopBtn = document.getElementById('scoutCounterStopBtn');
   if (stopBtn) stopBtn.addEventListener('click', requestBatchStop);
+  // 本日の送信数は非同期で取得して後から埋める
+  getScoutCount().then(n => {
+    const t = document.getElementById('scoutCounterToday');
+    if (t) t.textContent = n;
+  });
 }
 
 function hideBatchCounter() {
