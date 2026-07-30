@@ -1153,6 +1153,13 @@ function ngCheck(profileText, extraWords) {
       if (w && text.includes(w)) return `NGワード(${group[0]})`;
     }
   }
+
+  // 飲食店経験年数が「未経験」なら対象外。
+  // 自己PR欄の「未経験から〜」等を誤検知しないよう、項目の値だけを見る
+  const expMatch = text.match(/飲食店経験年数[ \t　]*\n?[ \t　]*([^\n]{0,12})/);
+  if (expMatch && /未経験|経験なし/.test(expMatch[1])) {
+    return 'NG未経験(飲食店経験年数が未経験)';
+  }
   const t = zenToHan(text);
   let age = null;
   // 「年齢」ラベルの直後(改行含む8文字以内)の数値
@@ -1643,8 +1650,9 @@ async function batchProfileStep(target) {
 
   const ng = ngCheck(text, await getCustomNgWords());
   if (ng) {
-    // 決定的なNG(職種・NGワード・転職回数)は記録して次回以降のキューから除外する
-    if (ng.startsWith('NG職種') || ng.startsWith('NGワード') || ng.startsWith('転職回数NG')) {
+    // 決定的なNG(職種・NGワード・未経験・転職回数)は記録して次回以降のキューから除外する
+    // (「判定不能」は情報が後から埋まる可能性があるため記録しない)
+    if (!ng.startsWith('判定不能')) {
       await addNgRegistry(target, ng);
     }
     await recordAndNext('skip', ng);
