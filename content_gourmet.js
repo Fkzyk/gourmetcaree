@@ -1105,7 +1105,10 @@ if (document.body) {
 
 // 件数上限なし。「止」を押すか、候補者が尽きるまで動き続ける
 const BATCH_MAX = 0;              // 0 = 1ページあたりの取得件数を制限しない
-const BATCH_MAX_EMPTY_PAGES = 3;  // 新規候補ゼロのページが続いたら候補者が尽きたと判断
+// 新規候補ゼロのページが続いたら候補者が尽きたと判断する。
+// 一覧に戻るたび1ページ目に戻される場合、奥のページへ行くのに毎回
+// 手前のページを通過するため、少し余裕を持たせている
+const BATCH_MAX_EMPTY_PAGES = 10;
 const BATCH_BODY_MIN = 300;
 
 // NG職種(過去経歴に1つでもあればNG)。表記ゆれ込み
@@ -1412,16 +1415,18 @@ async function collectIdsOnPage(excludeIds) {
 }
 
 // ── 一覧の「次へ」リンクを探す ──
+// このサイトのページ送りはJavaScript式(href="javascript:..." や "#")なので、
+// hrefの内容では有効性を判断できない。無効化クラスの有無だけで判定する
 function findNextPageLink() {
-  const links = [...document.querySelectorAll('a')].filter(a => {
-    if (a.closest('#scout-batch-panel')) return false;
-    const t = (a.textContent || '').trim();
-    return t === '次へ' || t === '次へ >' || t === '>' || t === '次';
+  const links = [...document.querySelectorAll('a, button')].filter(el => {
+    if (el.closest('#scout-batch-panel')) return false;
+    const t = (el.textContent || '').trim();
+    return t === '次へ' || t === '次へ >' || t === '>' || t === '次' || t === '次のページ';
   });
-  // hrefを持つ有効なリンクのみ(最終ページでは無効化されていることがある)
-  return links.find(a => {
-    const href = a.getAttribute('href') || '';
-    return href && href !== '#' && !a.classList.contains('disabled');
+  return links.find(el => {
+    if (el.disabled) return false;
+    const cls = el.className || '';
+    return !/disabled|inactive|is-disabled/i.test(cls);
   }) || null;
 }
 
@@ -1577,10 +1582,15 @@ async function batchRefillStep() {
     return;
   }
   await setBatch(b); // phaseは'refill'のまま
-  showBatchToast('このページは処理済みです。次のページへ進みます...');
+  showBatchToast(`このページは処理済みです。次のページへ進みます... (${b.emptyPages}/${BATCH_MAX_EMPTY_PAGES})`);
   setTimeout(() => {
-    const href = next.getAttribute('href');
-    if (href && href !== '#') { location.href = next.href; } else { next.click(); }
+    // JavaScript式のページ送りにも対応するため、必ずクリックで遷移させる
+    next.click();
+    // AJAXで表が差し替わる場合はページが再読み込みされず、
+    // content scriptも再実行されないため、自分で再チェックする
+    // (ページ遷移が起きた場合はこのタイマーごと破棄される)
+    batchRouted = false;
+    setTimeout(batchRefillStep, 5000);
   }, 2000);
 }
 
