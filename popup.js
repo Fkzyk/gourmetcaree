@@ -23,18 +23,18 @@ function refresh() {
   chrome.storage.local.get(['autoBatch'], (d) => {
     const b = d.autoBatch;
     getTodayCount((today) => {
-      const todayLine = `本日の送信 <b>${today}</b>件`;
+      const todayLine = `本日 <b>${today}</b>件`;
       if (b && b.active) {
         const c = countResults(b.log);
-        const main = b.dryRun ? `準備OK ${c.ready}件` : `送信 ${c.sent}件`;
+        const main = b.dryRun ? `準備OK ${c.ready}件` : `完了 ${c.sent}件`;
         statusEl.className = 'status running';
         statusEl.innerHTML =
-          `<b>自動スカウト稼働中${b.dryRun ? '（ドライラン）' : ''}</b><br>` +
+          `<b>処理中${b.dryRun ? '（確認モード）' : ''}</b><br>` +
           `今回 ${main} ／ 処理済み ${(b.log || []).length}件<br>${todayLine}`;
         stopBtn.style.display = 'block';
       } else {
         statusEl.className = 'status idle';
-        statusEl.innerHTML = `自動スカウトは動いていません<br>${todayLine}`;
+        statusEl.innerHTML = `現在なにも動いていません<br>${todayLine}`;
         stopBtn.style.display = 'none';
       }
     });
@@ -51,7 +51,7 @@ stopBtn.addEventListener('click', () => {
     chrome.storage.local.set({ autoBatch: b, autoLastReport: b }, () => {
       statusEl.className = 'status idle';
       statusEl.innerHTML =
-        '<b>停止しました</b><br>結果は検索一覧ページの「報」ボタンで確認できます';
+        '<b>停止しました</b><br>結果は一覧ページの「報」ボタンで確認できます';
       stopBtn.style.display = 'none';
     });
   });

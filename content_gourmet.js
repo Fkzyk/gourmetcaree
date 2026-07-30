@@ -1279,7 +1279,7 @@ function showBatchCounter(b) {
   const counts = { sent: 0, ready: 0, skip: 0, error: 0 };
   (b.log || []).forEach(e => { if (counts[e.result] !== undefined) counts[e.result]++; });
   const done = (b.log || []).length;
-  const mainLabel = b.dryRun ? '準備OK' : '送信';
+  const mainLabel = b.dryRun ? '準備OK' : '完了';
   const mainCount = b.dryRun ? counts.ready : counts.sent;
 
   let el = document.getElementById('scout-batch-counter');
@@ -1296,15 +1296,15 @@ function showBatchCounter(b) {
   el.style.display = 'block';
   el.innerHTML =
     `<div style="font-size:11px;color:#5f6368;margin-bottom:2px;">` +
-    `自動スカウト稼働中${b.dryRun ? '（ドライラン）' : ''}</div>` +
+    `処理中${b.dryRun ? '（確認モード）' : ''}</div>` +
     `<div style="font-size:22px;font-weight:bold;color:#1a73e8;line-height:1.1;">` +
     `<span style="font-size:12px;font-weight:normal;color:#5f6368;">今回 </span>` +
     `${mainLabel} ${mainCount}<span style="font-size:13px;font-weight:normal;">件</span></div>` +
     `<div style="font-size:11px;color:#5f6368;margin:3px 0 2px;">` +
-    `処理済み ${done}件（スキップ ${counts.skip} / エラー ${counts.error}）</div>` +
+    `処理済み ${done}件（対象外 ${counts.skip} / エラー ${counts.error}）</div>` +
     // バッチをやり直しても消えない累計。「動」で0に戻る今回分と区別する
     `<div style="font-size:11px;color:#202124;margin-bottom:8px;padding-top:4px;` +
-    `border-top:1px dashed #dadce0;">本日の送信 <b id="scoutCounterToday">…</b>件</div>` +
+    `border-top:1px dashed #dadce0;">本日 <b id="scoutCounterToday">…</b>件</div>` +
     // どの画面からでも止められるよう、カウンターに停止ボタンを持たせる
     `<button id="scoutCounterStopBtn" style="width:100%;padding:6px 0;border:none;border-radius:6px;` +
     `background:#b3261e;color:#fff;cursor:pointer;font-size:12px;font-weight:bold;">■ 停止</button>`;
@@ -1338,12 +1338,12 @@ function renderBatchPanel() {
     'position:fixed;bottom:16px;left:260px;z-index:99999;display:flex;gap:6px;' +
     'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
   p.innerHTML =
-    batchMiniBtn('batchDryBtn', '試', 'ドライラン開始(送信しない)', '#5f6368') +
-    batchMiniBtn('batchLiveBtn', '動', '自動スカウト開始(本番・自動送信)', '#1a73e8') +
-    batchMiniBtn('batchResumeBtn', '再', '中断した処理を再開(スリープ復帰後など)', '#e8710a') +
+    batchMiniBtn('batchDryBtn', '試', '確認モードで開始（送信しない）', '#5f6368') +
+    batchMiniBtn('batchLiveBtn', '動', '開始（本番）', '#1a73e8') +
+    batchMiniBtn('batchResumeBtn', '再', '中断した処理を再開', '#e8710a') +
     batchMiniBtn('batchStopBtn', '止', '停止', '#b3261e') +
-    batchMiniBtn('batchReportBtn', '報', '前回のレポートを表示', '#188038') +
-    batchMiniBtn('batchNgWordBtn', '語', '対象外にするNGワードの設定', '#7b1fa2');
+    batchMiniBtn('batchReportBtn', '報', '前回の結果を表示', '#188038') +
+    batchMiniBtn('batchNgWordBtn', '語', '対象外にする語の設定', '#7b1fa2');
   document.body.appendChild(p);
   document.getElementById('batchNgWordBtn').addEventListener('click', showNgWordEditor);
   document.getElementById('batchDryBtn').addEventListener('click', () => startBatch(true));
@@ -1466,10 +1466,10 @@ function findNextPageLink() {
 
 async function startBatch(dryRun) {
   const existing = await getBatch();
-  if (existing && existing.active) { showBatchToast('すでに実行中です。停止するには「止」を押してください'); return; }
+  if (existing && existing.active) { showBatchToast('すでに動いています。止めるには「止」を押してください'); return; }
   let queue = await collectIdsOnPage(null);
   if (BATCH_MAX > 0) queue = queue.slice(0, BATCH_MAX);
-  if (!queue.length) { showBatchToast('この一覧に処理対象の候補者が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
+  if (!queue.length) { showBatchToast('この一覧に対象が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
   const limitNote =
     `このページの${queue.length}件から開始し、終わり次第ページを進めて続けます。\n` +
     `件数の上限はありません。「止」を押すまで、または候補者がいなくなるまで動き続けます。`;
@@ -1529,8 +1529,46 @@ async function finishBatch(b, msg) {
   await setBatch(b);
   await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
   hideBatchCounter();
-  if (msg) showBatchToast(msg);
-  showReport(b);
+  hideBatchToast();
+  // 完了時は画面中央に結果を開かず、右下に控えめなお知らせを出すだけにする
+  // (詳しい結果は、お知らせの「詳細」か「報」ボタンから開く)
+  showDoneNotice(b, msg);
+}
+
+// ── 完了のお知らせ(画面右下・控えめな表示) ──
+function showDoneNotice(b, msg) {
+  const old = document.getElementById('scout-done-notice');
+  if (old) old.remove();
+
+  const counts = { sent: 0, ready: 0, skip: 0, error: 0 };
+  (b.log || []).forEach(e => { if (counts[e.result] !== undefined) counts[e.result]++; });
+  const main = b.dryRun ? counts.ready : counts.sent;
+
+  const el = document.createElement('div');
+  el.id = 'scout-done-notice';
+  el.style.cssText =
+    'position:fixed;right:20px;bottom:20px;z-index:99999;background:#fff;' +
+    'border:1px solid #dadce0;border-left:4px solid #188038;border-radius:8px;' +
+    'padding:12px 14px;width:270px;box-shadow:0 4px 16px rgba(0,0,0,0.16);' +
+    'color:#202124;font-size:12px;line-height:1.6;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  el.innerHTML =
+    `<div style="display:flex;align-items:flex-start;justify-content:space-between;">` +
+    `<div style="font-weight:bold;">処理が完了しました</div>` +
+    `<span id="scoutDoneClose" title="閉じる" style="cursor:pointer;color:#5f6368;` +
+    `font-size:14px;line-height:1;padding:0 2px;">×</span></div>` +
+    `<div style="margin-top:4px;">完了 <b>${main}</b>件 ／ 対象外 ${counts.skip}件` +
+    `${counts.error ? ` ／ エラー ${counts.error}件` : ''}</div>` +
+    (msg ? `<div style="margin-top:6px;color:#5f6368;font-size:11px;">${msg}</div>` : '') +
+    `<div style="margin-top:8px;"><span id="scoutDoneDetail" style="cursor:pointer;color:#1a73e8;` +
+    `text-decoration:underline;font-size:11px;">詳細を見る</span></div>`;
+  document.body.appendChild(el);
+
+  document.getElementById('scoutDoneClose').addEventListener('click', () => el.remove());
+  document.getElementById('scoutDoneDetail').addEventListener('click', () => {
+    el.remove();
+    showReport(b);
+  });
 }
 
 // メール全文は直近この件数分だけ保持する
@@ -1561,14 +1599,14 @@ async function recordAndNext(result, reason, mail) {
   if (b.idx >= b.queue.length) {
     b.phase = 'refill';
     await setBatch(b);
-    showBatchToast(`${b.log.length}件 処理済み。一覧に戻って次の候補者を探します...`);
+    showBatchToast(`${b.log.length}件 完了。一覧に戻って次を探します...`);
     const url = b.listUrl || '/shop-pc/member/list';
     setTimeout(() => { location.href = url; }, wait);
     return;
   }
 
   await setBatch(b);
-  showBatchToast(`自動スカウト ${b.log.length}件 処理済み。${Math.round(wait / 1000)}秒後に次へ...`);
+  showBatchToast(`${b.log.length}件 完了。${Math.round(wait / 1000)}秒後に次へ...`);
   setTimeout(gotoCurrent, wait);
 }
 
@@ -1617,7 +1655,7 @@ async function batchRefillStepInner() {
     b.emptyPages = 0;
     b.listUrl = location.href;
     await setBatch(b);
-    showBatchToast(`このページで${fresh.length}件の候補者を追加。処理を続けます...`);
+    showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
     return;
   }
@@ -1712,7 +1750,7 @@ async function routeBatch() {
     return;
   }
 
-  showBatchToast(`自動スカウト: ID ${target} を処理中...`);
+  showBatchToast(`${b.log.length + 1}件目を処理中...`);
 
   if (b.phase === 'profile' && getProfilePageMemberId() === target) {
     setTimeout(() => batchProfileStep(target), 2000);
@@ -1750,7 +1788,7 @@ async function resumeBatch() {
   if (b.phase === 'scout' || b.phase === 'postSend') b.phase = 'profile';
   await setBatch(b);
   showBatchCounter(b);
-  showBatchToast(`${b.log.length}件まで完了しています。続きから再開します...`);
+  showBatchToast(`${b.log.length}件まで完了。続きから再開します...`);
   if (b.phase === 'refill') {
     const url = b.listUrl || '/shop-pc/member/list';
     setTimeout(() => { location.href = url; }, 1500);
@@ -1806,7 +1844,7 @@ async function batchRequestGenerate(profileText) {
   batchAwait = 'generate';
   batchMail = null;
   armWatchdog('generate');
-  showBatchToast(`自動スカウト ${b.log.length + 1}件目: メール生成中...`);
+  showBatchToast(`${b.log.length + 1}件目: 文面を作成中...`);
   const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n候補者情報:\n${profileText}\n\n上記の候補者情報をもとにスカウトメールを作成してください。出力は件名1行＋空行＋本文のみ。ラベルは不要です。`;
   chrome.runtime.sendMessage({ action: 'openGemini', prompt: fullPrompt, mode: 'generate' });
 }
@@ -1867,7 +1905,7 @@ async function batchHandleGenerated(message) {
   batchMail = { subject: subjectText, body: bodyText };
   batchAwait = 'verify';
   armWatchdog('verify');
-  showBatchToast(`自動スカウト ${b.log.length + 1}件目: AI二次検査中...`);
+  showBatchToast(`${b.log.length + 1}件目: 内容を確認中...`);
   chrome.runtime.sendMessage({ action: 'openGemini', mode: 'verify', prompt: buildVerifyPrompt(subjectText, bodyText) });
 }
 
@@ -1924,7 +1962,7 @@ async function batchHandleVerify(message) {
     await recordAndNext('error', '送信ボタンが見つからない', batchMail);
     return;
   }
-  showBatchToast(`自動スカウト ${b.log.length + 1}件目: 送信します...`);
+  showBatchToast(`${b.log.length + 1}件目: 完了処理中...`);
   btn.click();
   // 15秒たっても画面遷移しない場合は失敗として次へ
   setTimeout(async () => {
@@ -1939,7 +1977,7 @@ async function batchRetryOrSkip(b, reason, mail) {
   if (b.regen < 1) {
     b.regen++;
     await setBatch(b);
-    showBatchToast(`検証不合格のため再生成します(${String(reason).slice(0, 80)})`);
+    showBatchToast(`確認で差し戻し、作り直します(${String(reason).slice(0, 80)})`);
     const profile = await getStoredProfile(b.queue[b.idx]);
     if (profile && profile.text) { batchRequestGenerate(profile.text); return; }
   }
@@ -1971,7 +2009,7 @@ function showReport(b) {
     ? `\n\n※ メール全文は直近${BATCH_KEEP_MAILS}件のみ表示しています（古い${trimmed}件は結果のみ）\n`
     : '';
   const summary =
-    `自動スカウト結果${b.dryRun ? '【ドライラン】' : ''}\n` +
+    `処理結果${b.dryRun ? '【確認モード】' : ''}\n` +
     `送信:${counts.sent}件 / 準備OK:${counts.ready}件 / スキップ:${counts.skip}件 / エラー:${counts.error}件\n\n` +
     lines.join('\n') + trimNote + '\n' + mailDump;
 
