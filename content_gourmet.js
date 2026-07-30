@@ -1044,6 +1044,19 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+// ── 他のタブ・ポップアップからの停止を検知して即座に反映する ──
+// (拡張機能アイコンの停止ボタンはstorageを書き換えるだけなので、
+//  開いている画面側の待機状態とカウンター表示をここで片付ける)
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.autoBatch) return;
+  const nb = changes.autoBatch.newValue;
+  if (!nb || !nb.active) {
+    clearTimeout(batchWatchdog);
+    batchAwait = null;
+    hideBatchCounter();
+  }
+});
+
 // ── サイトの「送信」ボタン押下で当日カウンタを加算 ──
 // バッジは「実際に送信ボタンを押した数」を表す（生成しただけでは増えない）
 // 送信ボタンのID(#btn_conf)は応募者メッセージ画面等でも共通のため、
@@ -1280,8 +1293,14 @@ function showBatchCounter(b) {
     `自動スカウト稼働中${b.dryRun ? '（ドライラン）' : ''}</div>` +
     `<div style="font-size:22px;font-weight:bold;color:#1a73e8;line-height:1.1;">` +
     `${mainLabel} ${mainCount}<span style="font-size:13px;font-weight:normal;">件</span></div>` +
-    `<div style="font-size:11px;color:#5f6368;margin-top:3px;">` +
-    `処理済み ${done}件（スキップ ${counts.skip} / エラー ${counts.error}）</div>`;
+    `<div style="font-size:11px;color:#5f6368;margin:3px 0 8px;">` +
+    `処理済み ${done}件（スキップ ${counts.skip} / エラー ${counts.error}）</div>` +
+    // どの画面からでも止められるよう、カウンターに停止ボタンを持たせる
+    `<button id="scoutCounterStopBtn" style="width:100%;padding:6px 0;border:none;border-radius:6px;` +
+    `background:#b3261e;color:#fff;cursor:pointer;font-size:12px;font-weight:bold;">■ 停止</button>`;
+  // innerHTMLで作り直すため、毎回ハンドラを付け直す
+  const stopBtn = document.getElementById('scoutCounterStopBtn');
+  if (stopBtn) stopBtn.addEventListener('click', requestBatchStop);
 }
 
 function hideBatchCounter() {
