@@ -1568,7 +1568,25 @@ async function recordAndNext(result, reason, mail) {
 
 // ── 一覧ページでキューを補充する。無ければ次ページへ進む ──
 let refillRetry = 0;
+let refillInFlight = false;
+let refillSeq = 0;
 async function batchRefillStep() {
+  // 二重実行の防止。
+  // AJAXでページ送りすると DOM監視(MutationObserver)経由の routeBatch と
+  // クリック後の保険タイマーの両方から呼ばれ得るため、同時実行を禁止する
+  // (同時に走ると片方がキュー追加、もう片方が「空ページ」と誤判定して
+  //  次ページへ進んでしまい、処理が飛ぶ)
+  if (refillInFlight) return;
+  refillInFlight = true;
+  refillSeq++;
+  try {
+    await batchRefillStepInner();
+  } finally {
+    refillInFlight = false;
+  }
+}
+
+async function batchRefillStepInner() {
   const b = await getBatch();
   if (!b || !b.active) return;
   if (b.stopped) { await finishBatch(b); return; }
@@ -1613,13 +1631,36 @@ async function batchRefillStep() {
   showBatchToast(`このページは処理済みです。次のページへ進みます... (${b.emptyPages}/${BATCH_MAX_EMPTY_PAGES})`);
   setTimeout(() => {
     // JavaScript式のページ送りにも対応するため、必ずクリックで遷移させる
+    const seqAtClick = refillSeq;
+    const before = pageSignature();
     next.click();
     // AJAXで表が差し替わる場合はページが再読み込みされず、
     // content scriptも再実行されないため、自分で再チェックする
     // (ページ遷移が起きた場合はこのタイマーごと破棄される)
     batchRouted = false;
-    setTimeout(batchRefillStep, 5000);
+    waitForListChange(before, seqAtClick, 0);
   }, 2000);
+}
+
+// 一覧に並んでいる候補者IDの並び。ページが切り替わったかの判定に使う
+function pageSignature() {
+  const ids = [];
+  document.querySelectorAll('a[href*="/member/detail/index/"]').forEach(a => {
+    const m = (a.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+    if (m) ids.push(m[1]);
+  });
+  return ids.join(',');
+}
+
+// ページ送りクリック後、一覧の中身が入れ替わるのを待ってから補充を再開する。
+// AJAXの読み込みが遅い場合に、古いページを見て「処理済み」と誤判定し
+// ページを飛ばしてしまうのを防ぐ(最大約12秒待って、その後は続行)
+function waitForListChange(before, seqAtClick, attempt) {
+  setTimeout(() => {
+    if (refillSeq !== seqAtClick) return; // 他経路で既に補充が走った
+    if (pageSignature() !== before || attempt >= 3) { batchRefillStep(); return; }
+    waitForListChange(before, seqAtClick, attempt + 1);
+  }, 3000);
 }
 
 // ── ページ種別ごとの処理振り分け(tryInitから毎回呼ばれる。1ページ1回だけ実行) ──
