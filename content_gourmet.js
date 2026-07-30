@@ -1148,6 +1148,21 @@ const NG_KEYWORDS = [
   ['JLPT', 'ｊｌｐｔ']
 ];
 
+// 氏名の欄を示すラベル。
+// 「ふりがな」「フリガナ」「氏名(カナ)」等の読み欄は**含めない**
+// (日本人でも読み欄はカタカナになるため、含めると全員がNGになってしまう)
+const NAME_FIELD_LABELS = ['氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前'];
+
+// 読み欄・ローマ字欄を表す語(この語を含むラベルは氏名欄として扱わない)
+const NAME_READING_RE = /カナ|かな|ふりがな|フリガナ|ヨミ|読み|ローマ字/;
+
+// 氏名の値と間違えやすい語(ラベル行と値行が分かれている表の読み飛ばし用)
+const NAME_VALUE_SKIP = [
+  '氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前',
+  'ふりがな', 'フリガナ', 'カナ', 'セイ', 'メイ', '姓', '名',
+  '性別', '年齢', '住所', '必須', '任意', '未登録', '非公開', '未入力'
+];
+
 // 生成メール本文に含まれていたら不合格にする語
 const BODY_FORBIDDEN = [
   '目に留まりました', '魅力を感じました', '感銘を受けました',
@@ -1160,10 +1175,75 @@ let batchRouted = false; // このページ読み込みでバッチ処理を起�
 
 function zenToHan(s) { return s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
 
+// ── 氏名の判定(外国籍が推測できる表記を対象外にする) ──
+
+// 氏名欄の値として使えそうな文字列かを確かめて整える。だめなら null
+function cleanNameValue(v) {
+  if (!v) return null;
+  let s = String(v)
+    .replace(/[（(][^）)]*[）)]/g, '')  // 「山田太郎(ヤマダタロウ)」の括弧内を除く
+    .replace(/様$/, '')
+    .replace(/[\s　]+/g, ' ')
+    .trim();
+  if (!s || s.length > 30) return null;
+  if (NAME_VALUE_SKIP.includes(s)) return null;
+  if (NAME_READING_RE.test(s)) return null;
+  if (/^[-ー―−~〜/／:：*＊。、,.]+$/.test(s)) return null;
+  if (/[0-9０-９]/.test(s)) return null; // 「会員ID 99956」等の数値行は氏名ではない
+  return s;
+}
+
+// プロフィール本文から氏名欄の値だけを取り出す。
+// 自己PRや職務経歴に含まれるカタカナ語を誤って拾わないよう、
+// 「氏名」等のラベル行に紐づく値しか見ない
+function extractNameFromText(text) {
+  const lines = (text || '').split('\n').map(l => l.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || NAME_READING_RE.test(line)) continue; // 読み欄・ローマ字欄は見ない
+    const label = NAME_FIELD_LABELS.find(l => line.startsWith(l));
+    if (!label) continue;
+    // ラベルの後に長い文章が続く行(説明文など)は項目名ではない
+    const rest = line.slice(label.length).replace(/^[ \t　]*[:：]?[ \t　]*/, '').trim();
+    if (rest.length > 30) continue;
+    // 同じ行に値がある表記と、次行以降に値がある表記の両方に対応する
+    const candidates = [rest, lines[i + 1], lines[i + 2], lines[i + 3]];
+    for (const c of candidates) {
+      const v = cleanNameValue(c);
+      if (v) return v;
+    }
+  }
+  return null;
+}
+
+// 氏名がすべてローマ字・すべてカタカナなら対象外(外国籍と推測されるため)。
+// 漢字・ひらがなが1文字でも混ざっていれば対象内のまま
+function foreignNameNg(name) {
+  const s = cleanNameValue(name);
+  if (!s) return null;
+  // 区切り記号を除いた本体だけで文字種を判定する(長音「ー」「ｰ」は残す)
+  const core = s.replace(/[\s　・･.,、'’\-‐‑−/／]/g, '');
+  if (core.length < 2) return null;
+  if (/^[A-Za-zＡ-Ｚａ-ｚ]+$/.test(core)) return 'NG氏名(ローマ字表記)';
+  if (/^[ァ-ヶヷ-ヺーｦ-ﾟ]+$/.test(core)) return 'NG氏名(カタカナ表記)'; // 全角・半角カタカナ
+  return null;
+}
+
+// この判定のON/OFF(既定はON)。「語」ボタンの画面から切り替えられる
+function getForeignNameNg() {
+  return new Promise(res => chrome.storage.local.get(['ngForeignName'], d => res(d.ngForeignName !== false)));
+}
+function setForeignNameNg(on) {
+  return new Promise(res => chrome.storage.local.set({ ngForeignName: !!on }, res));
+}
+
 // ── NG判定(ルールベース・Geminiに任せない) ──
 // extraWords: 画面から追加したNGワード(1語1エントリ)
-function ngCheck(profileText, extraWords) {
+// opts.nameNg: 氏名(ローマ字のみ/カタカナのみ)判定を使うか
+// opts.fallbackName: プロフィールに氏名欄が無い場合に使う、一覧から拾った氏名
+function ngCheck(profileText, extraWords, opts) {
   const text = profileText || '';
+  const o = opts || {};
   for (const group of NG_OCCUPATIONS) {
     for (const w of group) {
       if (text.includes(w)) return `NG職種(${group[0]})`;
@@ -1174,6 +1254,13 @@ function ngCheck(profileText, extraWords) {
     for (const w of group) {
       if (w && text.includes(w)) return `NGワード(${group[0]})`;
     }
+  }
+
+  // 氏名がすべてローマ字・すべてカタカナなら対象外。
+  // 氏名欄が読み取れない場合は判定せず通す(安易にスキップしない)
+  if (o.nameNg !== false) {
+    const nameNg = foreignNameNg(extractNameFromText(text) || o.fallbackName);
+    if (nameNg) return nameNg;
   }
 
   // 飲食店経験年数が「未経験」なら対象外。
@@ -1370,6 +1457,7 @@ async function showNgWordEditor() {
   if (old) old.remove();
 
   const custom = await getCustomNgWords();
+  const nameNgOn = await getForeignNameNg();
   const ngReg = await getNgRegistry();
   const ngCount = Object.keys(ngReg).length;
   const builtinOcc = NG_OCCUPATIONS.map(g => g.join('／')).join('、');
@@ -1394,6 +1482,14 @@ async function showNgWordEditor() {
     `<b>もとから設定されているNG（変更不要）</b><br>` +
     `職種: ${builtinOcc}<br>キーワード: ${builtinKw}<br>` +
     `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。</div>` +
+    `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
+    `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">` +
+    `<input type="checkbox" id="ngNameChk"${nameNgOn ? ' checked' : ''} style="margin-top:2px;">` +
+    `<span style="font-size:12px;line-height:1.6;">お名前が<b>すべてローマ字</b>または` +
+    `<b>すべてカタカナ</b>の方を対象外にする<br>` +
+    `<span style="font-size:11px;color:#5f6368;">` +
+    `漢字・ひらがなが混ざっている方は対象に残ります。氏名の欄が読み取れない場合は対象に残します。` +
+    `</span></span></label></div>` +
     `<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
     `<div style="font-size:12px;font-weight:bold;margin-bottom:4px;">NG記録のリセット</div>` +
     `<div style="font-size:11px;color:#5f6368;line-height:1.6;margin-bottom:8px;">` +
@@ -1426,6 +1522,8 @@ async function showNgWordEditor() {
     const words = document.getElementById('ngWordArea').value
       .split('\n').map(s => s.trim()).filter(s => s.length > 0);
     await setCustomNgWords(words);
+    const nameChk = document.getElementById('ngNameChk');
+    if (nameChk) await setForeignNameNg(nameChk.checked);
     el.remove();
     showBatchToast(`NGワードを保存しました（追加分 ${words.length}語）`);
     setTimeout(hideBatchToast, 4000);
@@ -1446,6 +1544,33 @@ async function collectIdsOnPage(excludeIds) {
     ids.push(id);
   });
   return ids;
+}
+
+// ── 一覧ページの表から氏名を読み取る(会員ID → 氏名) ──
+// プロフィール画面に氏名欄が無い場合の保険。
+// 見出し(th)で氏名の列を特定できたときだけ読み取り、
+// 特定できなければ何も返さない(別の列を氏名と誤認しないため)
+function collectNamesOnPage() {
+  const names = {};
+  document.querySelectorAll('table').forEach(table => {
+    const headRow = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!headRow) return;
+    const heads = [...headRow.children].map(c => (c.textContent || '').replace(/[\s　]+/g, '').trim());
+    const col = heads.findIndex(h =>
+      h && !NAME_READING_RE.test(h) && NAME_FIELD_LABELS.some(l => h === l));
+    if (col < 0) return;
+    table.querySelectorAll('tr').forEach(tr => {
+      const link = tr.querySelector('a[href*="/member/detail/index/"]');
+      if (!link) return;
+      const m = (link.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+      if (!m) return;
+      const cell = tr.children[col];
+      if (!cell) return;
+      const v = cleanNameValue(cell.textContent || '');
+      if (v) names[m[1]] = v;
+    });
+  });
+  return names;
 }
 
 // ── 一覧の「次へ」リンクを探す ──
@@ -1478,7 +1603,8 @@ async function startBatch(dryRun) {
   await setBatch({
     active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false,
     log: [], startedAt: Date.now(),
-    listUrl: location.href, emptyPages: 0
+    listUrl: location.href, emptyPages: 0,
+    names: collectNamesOnPage()
   });
   showBatchCounter(await getBatch());
   gotoCurrent();
@@ -1651,6 +1777,7 @@ async function batchRefillStepInner() {
 
   if (fresh.length) {
     b.queue = b.queue.concat(fresh);
+    b.names = Object.assign(b.names || {}, collectNamesOnPage());
     b.phase = 'profile';
     b.emptyPages = 0;
     b.listUrl = location.href;
@@ -1806,7 +1933,12 @@ async function batchProfileStep(target) {
   }
   if (!text || text.length < 200) { await recordAndNext('skip', 'プロフィール取得失敗'); return; }
 
-  const ng = ngCheck(text, await getCustomNgWords());
+  // 氏名は プロフィール画面 → (無ければ)一覧で拾った氏名 の順に見る
+  const bNames = await getBatch();
+  const ng = ngCheck(text, await getCustomNgWords(), {
+    nameNg: await getForeignNameNg(),
+    fallbackName: (bNames && bNames.names) ? bNames.names[target] : null
+  });
   if (ng) {
     // 決定的なNG(職種・NGワード・未経験・転職回数)は記録して次回以降のキューから除外する
     // (「判定不能」は情報が後から埋まる可能性があるため記録しない)
