@@ -1222,6 +1222,10 @@ function addNgRegistry(id, reason) {
     chrome.storage.local.set({ autoNgIds: reg }, res);
   }));
 }
+// NG記録のリセット(送信済み記録は消さないので二重送信は起きない)
+function clearNgRegistry() {
+  return new Promise(res => chrome.storage.local.set({ autoNgIds: {} }, res));
+}
 
 function isListPage() { return location.pathname.includes('/member/list'); }
 function isScoutPage() { return location.pathname.includes('/scoutMail/'); }
@@ -1329,6 +1333,8 @@ async function showNgWordEditor() {
   if (old) old.remove();
 
   const custom = await getCustomNgWords();
+  const ngReg = await getNgRegistry();
+  const ngCount = Object.keys(ngReg).length;
   const builtinOcc = NG_OCCUPATIONS.map(g => g.join('／')).join('、');
   const builtinKw = NG_KEYWORDS.map(g => g.join('／')).join('、');
 
@@ -1350,7 +1356,16 @@ async function showNgWordEditor() {
     `<div style="font-size:11px;color:#5f6368;margin-top:10px;line-height:1.6;">` +
     `<b>もとから設定されているNG（変更不要）</b><br>` +
     `職種: ${builtinOcc}<br>キーワード: ${builtinKw}<br>` +
-    `そのほか「転職回数が年齢の10の位以上」も自動で対象外になります。</div>` +
+    `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。</div>` +
+    `<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
+    `<div style="font-size:12px;font-weight:bold;margin-bottom:4px;">NG記録のリセット</div>` +
+    `<div style="font-size:11px;color:#5f6368;line-height:1.6;margin-bottom:8px;">` +
+    `これまでに<b>${ngCount}名</b>がNG判定で記録され、次回以降のスカウト対象から外れています。<br>` +
+    `NGワードを消しても、すでに記録された方は戻りません。もう一度対象に含めたい場合はリセットしてください。<br>` +
+    `<b>送信済みの記録は消えません</b>ので、同じ方に二度送ることはありません。</div>` +
+    `<button id="ngResetBtn" style="padding:6px 14px;border:1px solid #b3261e;border-radius:6px;` +
+    `background:#fff;color:#b3261e;cursor:pointer;font-size:12px;"${ngCount ? '' : ' disabled'}>` +
+    `NG記録をリセット（${ngCount}名）</button></div>` +
     `<div style="margin-top:14px;text-align:right;">` +
     `<button id="ngWordCancel" style="padding:7px 18px;margin-right:8px;border:none;border-radius:6px;` +
     `background:#5f6368;color:#fff;cursor:pointer;font-size:13px;">キャンセル</button>` +
@@ -1359,6 +1374,17 @@ async function showNgWordEditor() {
   document.body.appendChild(el);
 
   document.getElementById('ngWordCancel').addEventListener('click', () => el.remove());
+  const resetBtn = document.getElementById('ngResetBtn');
+  if (resetBtn && ngCount) {
+    resetBtn.addEventListener('click', async () => {
+      if (!confirm(`NG判定の記録（${ngCount}名）をリセットします。\nこの方たちは次回から再びスカウト対象に含まれます。\n（送信済みの記録は消えないため、二重送信は起きません）\n\nよろしいですか？`)) return;
+      await clearNgRegistry();
+      resetBtn.textContent = 'リセットしました';
+      resetBtn.disabled = true;
+      showBatchToast(`NG記録をリセットしました（${ngCount}名を対象に戻しました）`);
+      setTimeout(hideBatchToast, 5000);
+    });
+  }
   document.getElementById('ngWordSave').addEventListener('click', async () => {
     const words = document.getElementById('ngWordArea').value
       .split('\n').map(s => s.trim()).filter(s => s.length > 0);
