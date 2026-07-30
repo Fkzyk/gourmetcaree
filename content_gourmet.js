@@ -1237,6 +1237,59 @@ function setForeignNameNg(on) {
   return new Promise(res => chrome.storage.local.set({ ngForeignName: !!on }, res));
 }
 
+// ── プロフィールの記入量の判定 ──
+
+// プロフィール画面に出てくる項目名。値が空かどうかの判定に使う
+// (グルメキャリーは値が空だと欄そのものが空になるため、
+//  ラベル行の次が別のラベル行なら「その項目は未記入」と分かる)
+const PROFILE_LABELS = [
+  '基本情報', '経験値', '希望条件', '学歴', '職務経歴', 'メール画面', 'プロフィール',
+  '会員ID', '性別', '生年月日', '年齢', '生年月日/年齢', '住所', '就業区分',
+  '最終ログイン日', '最終ログイン',
+  '飲食店経験年数', '得意なスキル', 'キャリアを伝える', '取得資格',
+  '希望年収', '希望業態', '希望職種', '希望勤務地', '希望雇用形態',
+  '学校名', '卒業区分', '会社名', '勤務期間', '仕事内容', '業態', '職種'
+];
+
+// このどれかに記入があれば「詳細まで登録済み」とみなす項目
+const DETAIL_FIELD_LABELS = [
+  '飲食店経験年数', '得意なスキル', 'キャリアを伝える', '取得資格',
+  '希望年収', '希望業態', '希望職種', '希望勤務地', '希望雇用形態',
+  '学校名', '卒業区分', '会社名', '勤務期間', '仕事内容', '業態'
+];
+
+function isProfileLabel(s) {
+  const v = (s || '').replace(/[\s　]/g, '');
+  if (!v) return true;
+  if (/^(職務経歴|学歴)\d*$/.test(v)) return true;
+  return PROFILE_LABELS.includes(v);
+}
+
+// 項目名に対応する値を取り出す(同じ行にある場合・次の行にある場合の両方に対応)
+function profileFieldValue(lines, label) {
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith(label)) continue;
+    const rest = lines[i].slice(label.length).replace(/^[ \t　]*[:：/／]?[ \t　]*/, '').trim();
+    if (rest && !isProfileLabel(rest)) return rest;
+    const next = (lines[i + 1] || '').trim();
+    if (next && !isProfileLabel(next)) return next;
+  }
+  return '';
+}
+
+// 基本情報しか登録されていないプロフィールか
+// (経験値・希望条件・学歴・職務経歴がすべて空。あとから記入される可能性があるため
+//  NG登録はせず、今回だけ見送る)
+function isSparseProfile(text) {
+  const lines = (text || '').split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  // 想定した項目名が1つも無いページ(画面構成の変更など)は判定しない
+  if (!DETAIL_FIELD_LABELS.some(l => lines.some(x => x.startsWith(l)))) return false;
+  for (const label of DETAIL_FIELD_LABELS) {
+    if (profileFieldValue(lines, label)) return false;
+  }
+  return true;
+}
+
 // ── NG判定(ルールベース・Geminiに任せない) ──
 // extraWords: 画面から追加したNGワード(1語1エントリ)
 // opts.nameNg: 氏名(ローマ字のみ/カタカナのみ)判定を使うか
@@ -1263,6 +1316,10 @@ function ngCheck(profileText, extraWords, opts) {
     if (nameNg) return nameNg;
   }
 
+  // 基本情報しか登録されていない方は今回は見送る。
+  // (NGではない。あとから経歴を登録される可能性があるので、次回また対象に含める)
+  if (isSparseProfile(text)) return '情報不足(基本情報のみ・詳細が未登録)';
+
   // 飲食店経験年数が「未経験」なら対象外。
   // 自己PR欄の「未経験から〜」等を誤検知しないよう、項目の値だけを見る
   const expMatch = text.match(/飲食店経験年数[ \t　]*\n?[ \t　]*([^\n]{0,12})/);
@@ -1270,12 +1327,17 @@ function ngCheck(profileText, extraWords, opts) {
     return 'NG未経験(飲食店経験年数が未経験)';
   }
   const t = zenToHan(text);
-  let age = null;
-  // 「年齢」ラベルの直後(改行含む8文字以内)の数値
-  let m = t.match(/年齢[^0-9]{0,8}([0-9]{1,3})/);
-  if (m) age = parseInt(m[1], 10);
-  if (age === null) { m = t.match(/([0-9]{2})歳/); if (m) age = parseInt(m[1], 10); }
-  if (age !== null && (age < 15 || age > 99)) age = null;
+  // 年齢の読み取り。表記ゆれが多いので候補を集め、15〜99歳に収まるものを使う
+  // (「生年月日 / 年齢 → 1997/07/10 29才」のように、生年月日と同じ欄の場合がある)
+  const ageCands = [];
+  let m = t.match(/([0-9]{1,3})[ \t　]*[歳才]/);            // 「29才」「38歳」
+  if (m) ageCands.push(parseInt(m[1], 10));
+  m = t.match(/年齢[^0-9]{0,10}([0-9]{1,3})(?![0-9])/);     // 「年齢 29」(西暦は除外)
+  if (m) ageCands.push(parseInt(m[1], 10));
+  m = t.match(/^[0-9]{4,}[ \t　]*[（(]([0-9]{1,3})[）)]/m);  // 見出しの「101906 （29）」
+  if (m) ageCands.push(parseInt(m[1], 10));
+  let age = ageCands.find(a => a >= 15 && a <= 99);
+  if (age === undefined) age = null;
 
   let companies = null;
   // ① 「◯社経験」表記
@@ -1481,7 +1543,8 @@ async function showNgWordEditor() {
     `<div style="font-size:11px;color:#5f6368;margin-top:10px;line-height:1.6;">` +
     `<b>もとから設定されているNG（変更不要）</b><br>` +
     `職種: ${builtinOcc}<br>キーワード: ${builtinKw}<br>` +
-    `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。</div>` +
+    `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。<br>` +
+    `基本情報しか登録していない方は、NG登録せずその回だけ見送ります（次回また対象に含まれます）。</div>` +
     `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
     `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">` +
     `<input type="checkbox" id="ngNameChk"${nameNgOn ? ' checked' : ''} style="margin-top:2px;">` +
@@ -1940,9 +2003,10 @@ async function batchProfileStep(target) {
     fallbackName: (bNames && bNames.names) ? bNames.names[target] : null
   });
   if (ng) {
-    // 決定的なNG(職種・NGワード・未経験・転職回数)は記録して次回以降のキューから除外する
-    // (「判定不能」は情報が後から埋まる可能性があるため記録しない)
-    if (!ng.startsWith('判定不能')) {
+    // 決定的なNG(職種・NGワード・氏名・未経験・転職回数)は記録して次回以降のキューから除外する
+    // (「判定不能」「情報不足」は、あとから本人が記入する可能性があるため記録しない。
+    //  次回のバッチでもう一度プロフィールを見に行く)
+    if (!ng.startsWith('判定不能') && !ng.startsWith('情報不足')) {
       await addNgRegistry(target, ng);
     }
     await recordAndNext('skip', ng);
