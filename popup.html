@@ -43,10 +43,41 @@
       color: #888;
       margin-top: 12px;
     }
+    .status {
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+    .status.running {
+      background: #e8f0fe;
+      color: #1a47a0;
+      border: 1px solid #1a73e8;
+    }
+    .status.idle {
+      background: #f1f3f4;
+      color: #5f6368;
+    }
+    #popupStopBtn {
+      display: none;
+      width: 100%;
+      padding: 9px 0;
+      margin-bottom: 12px;
+      border: none;
+      border-radius: 8px;
+      background: #b3261e;
+      color: #fff;
+      font-size: 13px;
+      font-weight: bold;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
   <h2>✉ スカウトメール自動生成</h2>
+  <div id="batchStatus" class="status idle">読み込み中...</div>
+  <button id="popupStopBtn">■ 停止する</button>
   <div class="info-box">
     <b>使い方</b><br>
     グルメキャリー管理画面の候補者詳細ページ（スカウトフォームのある画面）を開くと、左下にボタンが表示されます。
@@ -70,5 +101,6 @@
     <span class="step-num">⑥ </span>内容を確認して送信する
   </div>
   <p class="note">※ Geminiにログインしていることを確認してください</p>
+  <script src="popup.js"></script>
 </body>
 </html>

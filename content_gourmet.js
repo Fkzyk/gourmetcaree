@@ -432,12 +432,101 @@ function incrementScoutCount() {
   });
 }
 
+// 件数を手で書き換える(押し忘れ・数え間違いの調整用)
+function setScoutCount(count) {
+  return new Promise((resolve) => {
+    const n = Math.max(0, Math.min(999, Math.round(count) || 0));
+    chrome.storage.local.set({ scoutCount: n, scoutCountDate: getTodayKey() }, () => resolve(n));
+  });
+}
+
 function updateBadge(count) {
   const badge = document.getElementById('scoutBadge');
   if (badge) {
     badge.textContent = count;
-    badge.style.display = count > 0 ? 'flex' : 'none';
+    // 0件のときも押せるように表示は残す(数字を手で直せるようにするため)。
+    // ただし色は控えめにして目立たせない
+    badge.style.display = 'flex';
+    badge.style.background = count > 0 ? '#d32f2f' : '#9aa0a6';
   }
+  const inline = document.getElementById('scoutCountValue');
+  if (inline) inline.textContent = count;
+  const chip = document.getElementById('scout-count-chip');
+  if (chip) {
+    chip.textContent = count;
+    chip.style.background = count > 0 ? '#d32f2f' : '#9aa0a6';
+  }
+}
+
+// ── どの画面でも件数を直せる小さな丸(左下) ──
+// スカウト画面以外にはバッジが出ないため、常設の丸を置く
+function renderCountChip() {
+  // スカウト画面は生成ボタンのバッジがあるので不要(同じ場所で重なる)
+  if (document.getElementById('scout-ext-panel')) {
+    const dup = document.getElementById('scout-count-chip');
+    if (dup) dup.remove();
+    return;
+  }
+  let chip = document.getElementById('scout-count-chip');
+  if (!chip) {
+    chip = document.createElement('div');
+    chip.id = 'scout-count-chip';
+    chip.title = 'クリックすると件数を手で直せます';
+    chip.style.cssText =
+      'position:fixed;bottom:16px;z-index:99999;width:34px;height:34px;border-radius:50%;' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;' +
+      'font-size:13px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,0.18);background:#9aa0a6;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+    document.body.appendChild(chip);
+    chip.addEventListener('click', (e) => { e.stopPropagation(); showCountEditor(); });
+  }
+  // 一覧ページは操作ボタン(6個)の右隣、それ以外は左下の定位置に置く
+  chip.style.left = document.getElementById('scout-batch-panel') ? '500px' : '260px';
+  // 数字の読み込みは作った直後だけ(tryInitは何度も呼ばれるため)
+  if (!chip.dataset.loaded) {
+    chip.dataset.loaded = '1';
+    getScoutCount().then(n => updateBadge(n));
+  }
+}
+
+// ── バッジをクリックしたときの件数調整パネル ──
+function showCountEditor() {
+  const old = document.getElementById('scout-count-editor');
+  if (old) { old.remove(); return; } // もう一度押したら閉じる
+
+  const el = document.createElement('div');
+  el.id = 'scout-count-editor';
+  el.style.cssText =
+    // ボタンの少し上に出す(一覧ページの操作ボタン列と重ならない位置)
+    'position:fixed;bottom:58px;left:260px;z-index:100000;background:#fff;' +
+    'border:1px solid #dadce0;border-radius:10px;padding:8px 10px;' +
+    'box-shadow:0 3px 12px rgba(0,0,0,0.2);color:#202124;font-size:12px;' +
+    'display:flex;align-items:center;gap:8px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  const btn = (id, label) =>
+    `<button id="${id}" style="width:26px;height:26px;border:1px solid #dadce0;border-radius:6px;` +
+    `background:#f8f9fa;color:#202124;cursor:pointer;font-size:15px;line-height:1;padding:0;">${label}</button>`;
+  el.innerHTML =
+    `<span style="color:#5f6368;">本日</span>` +
+    btn('scoutCountMinus', '−') +
+    `<b id="scoutCountValue" style="min-width:24px;text-align:center;font-size:14px;">0</b>` +
+    btn('scoutCountPlus', '＋') +
+    `<span style="color:#5f6368;">件</span>` +
+    `<button id="scoutCountClose" style="border:none;background:none;color:#5f6368;` +
+    `cursor:pointer;font-size:13px;padding:0 2px;">×</button>`;
+  document.body.appendChild(el);
+
+  const apply = (diff) => {
+    getScoutCount().then(n => setScoutCount(n + diff)).then(n => {
+      updateBadge(n);
+      const c = document.getElementById('scoutCounterToday');
+      if (c) c.textContent = n; // 稼働中のカウンター表示も合わせる
+    });
+  };
+  document.getElementById('scoutCountMinus').addEventListener('click', () => apply(-1));
+  document.getElementById('scoutCountPlus').addEventListener('click', () => apply(1));
+  document.getElementById('scoutCountClose').addEventListener('click', () => el.remove());
+  getScoutCount().then(n => { const v = document.getElementById('scoutCountValue'); if (v) v.textContent = n; });
 }
 
 // ── パネルのHTML作成（フローティングボタン + バッジ）──
@@ -448,7 +537,7 @@ function createPanel() {
     <div id="scoutStatus" class="scout-status" style="display:none;"></div>
     <div class="scout-btn-wrapper">
       <button class="scout-btn scout-btn-primary" id="scoutGenerateBtn"></button>
-      <span id="scoutBadge" class="scout-badge" style="display:none;">0</span>
+      <span id="scoutBadge" class="scout-badge" title="クリックすると件数を手で直せます" style="display:none;">0</span>
     </div>
   `;
   return panel;
@@ -794,6 +883,13 @@ function initPanel() {
 
   getScoutCount().then(count => updateBadge(count));
 
+  // バッジをクリックすると、その日の件数を手で増減できる
+  const badgeEl = document.getElementById('scoutBadge');
+  if (badgeEl) {
+    badgeEl.style.cursor = 'pointer';
+    badgeEl.addEventListener('click', (e) => { e.stopPropagation(); showCountEditor(); });
+  }
+
   document.getElementById('scoutGenerateBtn').addEventListener('click', async () => {
     let candidateInfo = '';
 
@@ -1044,6 +1140,19 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+// ── 他のタブ・ポップアップからの停止を検知して即座に反映する ──
+// (拡張機能アイコンの停止ボタンはstorageを書き換えるだけなので、
+//  開いている画面側の待機状態とカウンター表示をここで片付ける)
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.autoBatch) return;
+  const nb = changes.autoBatch.newValue;
+  if (!nb || !nb.active) {
+    clearTimeout(batchWatchdog);
+    batchAwait = null;
+    hideBatchCounter();
+  }
+});
+
 // ── サイトの「送信」ボタン押下で当日カウンタを加算 ──
 // バッジは「実際に送信ボタンを押した数」を表す（生成しただけでは増えない）
 // 送信ボタンのID(#btn_conf)は応募者メッセージ画面等でも共通のため、
@@ -1065,8 +1174,10 @@ function tryInit() {
   // 全自動スカウトの振り分け(バッチ稼働中のみ動く。1ページ1回)
   routeBatch();
 
-  if (document.getElementById('scout-ext-panel')) return;
-  if (isScoutFormPresent()) initPanel();
+  if (!document.getElementById('scout-ext-panel') && isScoutFormPresent()) initPanel();
+
+  // 件数の丸はどの画面にも出す(いつでも手で直せるように)
+  renderCountChip();
 }
 
 // 初回チェック
@@ -1105,7 +1216,20 @@ if (document.body) {
 
 // 件数上限なし。「止」を押すか、候補者が尽きるまで動き続ける
 const BATCH_MAX = 0;              // 0 = 1ページあたりの取得件数を制限しない
-const BATCH_MAX_EMPTY_PAGES = 3;  // 新規候補ゼロのページが続いたら候補者が尽きたと判断
+// 自動ページ送りの有効/無効。
+// このサイトの「次へ」は画面上の検索フォームを再送信する実装のため、
+// プロフィール画面を経由して一覧に戻るとフォームが空になり、
+// 「都道府県を選択してください」というアラートが出て処理が止まっていた。
+// 対策として、バッチ開始時の検索条件を覚えておき、ページ送りの直前に
+// フォームへ書き戻す(serializeSearchForm / restoreSearchForm)。
+// あわせて、クリックの間だけサイトのアラートを止め、進めなかった場合は
+// 原因を添えて終了する(放置運用でも固まらないようにするため)。
+const BATCH_AUTO_PAGING = true;
+
+// 新規候補ゼロのページが続いたら候補者が尽きたと判断する。
+// 処理済みの方が並ぶページが何ページも続くことがあるため多めにする
+// (1ページの確認は数秒。ページが進まない場合は別の判定で止まる)
+const BATCH_MAX_EMPTY_PAGES = 12;
 const BATCH_BODY_MIN = 300;
 
 // NG職種(過去経歴に1つでもあればNG)。表記ゆれ込み
@@ -1126,6 +1250,29 @@ const NG_KEYWORDS = [
   ['JLPT', 'ｊｌｐｔ']
 ];
 
+// 氏名の欄を示すラベル。
+// 「ふりがな」「フリガナ」「氏名(カナ)」等の読み欄は**含めない**
+// (日本人でも読み欄はカタカナになるため、含めると全員がNGになってしまう)
+const NAME_FIELD_LABELS = ['氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前'];
+
+// 読み欄・ローマ字欄を表す語(この語を含むラベルは氏名欄として扱わない)
+const NAME_READING_RE = /カナ|かな|ふりがな|フリガナ|ヨミ|読み|ローマ字/;
+
+// 氏名の値と間違えやすい語(これらは氏名の値として採用しない)
+const NAME_VALUE_SKIP = [
+  '氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前',
+  'ふりがな', 'フリガナ', 'カナ', 'セイ', 'メイ', '姓', '名',
+  '性別', '年齢', '住所', '必須', '任意', '未登録', '非公開', '未入力'
+];
+
+// 氏名の見出しが並ぶ表(氏名／ふりがな→値／値)で読み飛ばしてよい行。
+// 「性別」「住所」など**別項目**の見出しはここに入れない
+// (氏名欄が空のとき、その先の別項目の値を氏名と取り違えるため)
+const NAME_HEADER_SKIP = [
+  '氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前',
+  'ふりがな', 'フリガナ', 'カナ', 'セイ', 'メイ', '姓', '名', '必須', '任意'
+];
+
 // 生成メール本文に含まれていたら不合格にする語
 const BODY_FORBIDDEN = [
   '目に留まりました', '魅力を感じました', '感銘を受けました',
@@ -1138,10 +1285,186 @@ let batchRouted = false; // このページ読み込みでバッチ処理を起�
 
 function zenToHan(s) { return s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)); }
 
+// ── 氏名の判定(外国籍が推測できる表記を対象外にする) ──
+
+// 氏名欄の値として使えそうな文字列かを確かめて整える。だめなら null
+function cleanNameValue(v) {
+  if (!v) return null;
+  let s = String(v)
+    .replace(/[（(][^）)]*[）)]/g, '')  // 「山田太郎(ヤマダタロウ)」の括弧内を除く
+    .replace(/様$/, '')
+    .replace(/[\s　]+/g, ' ')
+    .trim();
+  if (!s || s.length > 30) return null;
+  if (NAME_VALUE_SKIP.includes(s)) return null;
+  if (NAME_READING_RE.test(s)) return null;
+  if (/^[-ー―−~〜/／:：*＊。、,.]+$/.test(s)) return null;
+  if (/[0-9０-９]/.test(s)) return null; // 「会員ID 99956」等の数値行は氏名ではない
+  return s;
+}
+
+// プロフィール本文から氏名欄の値だけを取り出す。
+// 自己PRや職務経歴に含まれるカタカナ語を誤って拾わないよう、
+// 「氏名」等のラベル行に紐づく値しか見ない
+function extractNameFromText(text) {
+  const lines = (text || '').split('\n').map(l => l.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || NAME_READING_RE.test(line)) continue; // 読み欄・ローマ字欄は見ない
+    const label = NAME_FIELD_LABELS.find(l => line.startsWith(l));
+    if (!label) continue;
+    // ラベルの後に長い文章が続く行(説明文など)は項目名ではない
+    const rest = line.slice(label.length).replace(/^[ \t　]*[:：]?[ \t　]*/, '').trim();
+    if (rest.length > 30) continue;
+
+    // 値の場所: 同じ行 → 無ければ次の行。
+    // 「氏名/ふりがな」のように見出しだけが続く表もあるため、
+    // 氏名まわりの見出し行だけは読み飛ばす。
+    // それ以外の行に当たったら、そこで打ち切る
+    // (氏名欄が空のときに、別項目の値を氏名と取り違えないため)
+    let value = rest;
+    for (let j = i + 1; !value && j <= i + 3 && j < lines.length; j++) {
+      const c = lines[j];
+      if (!c) continue;
+      const flat = c.replace(/[\s　]/g, '');
+      if (NAME_HEADER_SKIP.includes(flat) || NAME_READING_RE.test(c)) continue;
+      value = c;
+    }
+    if (!value || isProfileLabel(value)) continue; // 氏名欄が空
+
+    const v = cleanNameValue(value);
+    if (v) return v;
+  }
+  return null;
+}
+
+// 氏名がすべてローマ字・すべてカタカナなら対象外(外国籍と推測されるため)。
+// 漢字・ひらがなが1文字でも混ざっていれば対象内のまま
+function foreignNameNg(name) {
+  const s = cleanNameValue(name);
+  if (!s) return null;
+  // 区切り記号を除いた本体だけで文字種を判定する(長音「ー」「ｰ」は残す)
+  const core = s.replace(/[\s　・･.,、'’\-‐‑−/／]/g, '');
+  if (core.length < 2) return null;
+  if (/^[A-Za-zＡ-Ｚａ-ｚ]+$/.test(core)) return 'NG氏名(ローマ字表記)';
+  if (/^[ァ-ヶヷ-ヺーｦ-ﾟ]+$/.test(core)) return 'NG氏名(カタカナ表記)'; // 全角・半角カタカナ
+  return null;
+}
+
+// この判定のON/OFF(既定はON)。「語」ボタンの画面から切り替えられる
+function getForeignNameNg() {
+  return new Promise(res => chrome.storage.local.get(['ngForeignName'], d => res(d.ngForeignName !== false)));
+}
+function setForeignNameNg(on) {
+  return new Promise(res => chrome.storage.local.set({ ngForeignName: !!on }, res));
+}
+
+// ── プロフィールの記入量の判定 ──
+
+// プロフィール画面に出てくる項目名。値が空かどうかの判定に使う
+// (グルメキャリーは値が空だと欄そのものが空になるため、
+//  ラベル行の次が別のラベル行なら「その項目は未記入」と分かる)
+const PROFILE_LABELS = [
+  '基本情報', '経験値', '希望条件', '学歴', '職務経歴', 'メール画面', 'プロフィール',
+  '会員ID', '性別', '生年月日', '年齢', '生年月日/年齢', '住所', '就業区分',
+  '最終ログイン日', '最終ログイン',
+  '飲食店経験年数', '得意なスキル', 'キャリアを伝える', '取得資格',
+  '希望年収', '希望業態', '希望職種', '希望勤務地', '希望雇用形態',
+  '学校名', '卒業区分', '会社名', '勤務期間', '仕事内容', '業態', '職種'
+];
+
+// このどれかに記入があれば「詳細まで登録済み」とみなす項目
+const DETAIL_FIELD_LABELS = [
+  '飲食店経験年数', '得意なスキル', 'キャリアを伝える', '取得資格',
+  '希望年収', '希望業態', '希望職種', '希望勤務地', '希望雇用形態',
+  '学校名', '卒業区分', '会社名', '勤務期間', '仕事内容', '業態'
+];
+
+// プロフィール画面の表から「項目名 → 値」を直接読む。
+// テキストの行だけで判断すると、空欄のときに次の項目の値を拾ってしまうため、
+// 表の構造が読めるときはこちらを優先する
+function readProfileFieldsFromDom() {
+  const fields = {};
+  const put = (k, v) => {
+    const key = (k || '').replace(/[\s　]+/g, '');
+    if (!key || key.length > 20) return;
+    // 同じ項目名が複数ある場合(職務経歴1〜n)は、最初に見つかった「記入のある値」を採用する
+    if (fields[key] === undefined || isEmptyFieldValue(fields[key])) {
+      fields[key] = (v || '').replace(/[\s　]+/g, ' ').trim();
+    }
+  };
+  document.querySelectorAll('tr').forEach(tr => {
+    const cells = [...tr.children].filter(c => c.tagName === 'TH' || c.tagName === 'TD');
+    if (cells.length !== 2) return; // 「項目名 | 値」の2列だけを対象にする
+    put(cells[0].textContent, cells[1].textContent);
+  });
+  document.querySelectorAll('dl').forEach(dl => {
+    const kids = [...dl.children];
+    for (let i = 0; i < kids.length - 1; i++) {
+      if (kids[i].tagName === 'DT' && kids[i + 1].tagName === 'DD') {
+        put(kids[i].textContent, kids[i + 1].textContent);
+      }
+    }
+  });
+  return fields;
+}
+
+// 未記入を表す値か(グルメキャリーは空欄を「--」で表示することがある)
+function isEmptyFieldValue(v) {
+  return !String(v || '').replace(/[-‐‑–—ー―−ｰ－\s　.。、,]/g, '').trim();
+}
+
+function isProfileLabel(s) {
+  const v = (s || '').replace(/[\s　]/g, '');
+  if (!v) return true;
+  if (/^(職務経歴|学歴)\d*$/.test(v)) return true;
+  return PROFILE_LABELS.includes(v);
+}
+
+// 項目名に対応する値を取り出す(同じ行にある場合・次の行にある場合の両方に対応)
+function profileFieldValue(lines, label) {
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith(label)) continue;
+    // 空欄だった場合は、同じ項目名の次の出現(職務経歴2以降など)も見る
+    const rest = lines[i].slice(label.length).replace(/^[ \t　]*[:：/／]?[ \t　]*/, '').trim();
+    if (rest && !isProfileLabel(rest)) {
+      if (!isEmptyFieldValue(rest)) return rest;
+      continue;
+    }
+    const next = (lines[i + 1] || '').trim();
+    if (next && !isProfileLabel(next) && !isEmptyFieldValue(next)) return next;
+  }
+  return '';
+}
+
+// 基本情報しか登録されていないプロフィールか
+// (経験値・希望条件・学歴・職務経歴がすべて空。あとから記入される可能性があるため
+//  NG登録はせず、今回だけ見送る)
+// fields: 画面の表から読んだ「項目名→値」(あればこちらを優先)
+function isSparseProfile(text, fields) {
+  // ① 画面の表から見て、どれかに記入があれば「詳細あり」
+  const domKnown = !!fields && DETAIL_FIELD_LABELS.some(l => fields[l] !== undefined);
+  if (domKnown && DETAIL_FIELD_LABELS.some(l => !isEmptyFieldValue(fields[l]))) return false;
+
+  // ② テキストから見て、どれかに記入があれば「詳細あり」
+  // (職務経歴など、表として読めない部分を取りこぼさないため、両方で確認する)
+  const lines = (text || '').split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const textKnown = DETAIL_FIELD_LABELS.some(l => lines.some(x => x.startsWith(l)));
+  if (DETAIL_FIELD_LABELS.some(l => profileFieldValue(lines, l))) return false;
+
+  // 想定した項目名がどちらの方法でも見つからないページ(画面構成の変更など)は判定しない
+  if (!domKnown && !textKnown) return false;
+  return true;
+}
+
 // ── NG判定(ルールベース・Geminiに任せない) ──
 // extraWords: 画面から追加したNGワード(1語1エントリ)
-function ngCheck(profileText, extraWords) {
+// opts.nameNg: 氏名(ローマ字のみ/カタカナのみ)判定を使うか
+// opts.fallbackName: プロフィールに氏名欄が無い場合に使う、一覧から拾った氏名
+// opts.fields: プロフィール画面の表から読んだ「項目名→値」
+function ngCheck(profileText, extraWords, opts) {
   const text = profileText || '';
+  const o = opts || {};
   for (const group of NG_OCCUPATIONS) {
     for (const w of group) {
       if (text.includes(w)) return `NG職種(${group[0]})`;
@@ -1154,6 +1477,23 @@ function ngCheck(profileText, extraWords) {
     }
   }
 
+  // 氏名がすべてローマ字・すべてカタカナなら対象外。
+  // 氏名欄が読み取れない場合は判定せず通す(安易にスキップしない)
+  if (o.nameNg !== false) {
+    // 画面の表から読めた氏名 → 本文から読めた氏名 → 一覧から拾った氏名 の順
+    let name = null;
+    if (o.fields) {
+      const key = NAME_FIELD_LABELS.find(l => o.fields[l] !== undefined && !NAME_READING_RE.test(l));
+      if (key) name = o.fields[key] || null;
+    }
+    const nameNg = foreignNameNg(name || extractNameFromText(text) || o.fallbackName);
+    if (nameNg) return nameNg;
+  }
+
+  // 基本情報しか登録されていない方は今回は見送る。
+  // (NGではない。あとから経歴を登録される可能性があるので、次回また対象に含める)
+  if (isSparseProfile(text, o.fields)) return '情報不足(基本情報のみ・詳細が未登録)';
+
   // 飲食店経験年数が「未経験」なら対象外。
   // 自己PR欄の「未経験から〜」等を誤検知しないよう、項目の値だけを見る
   const expMatch = text.match(/飲食店経験年数[ \t　]*\n?[ \t　]*([^\n]{0,12})/);
@@ -1161,12 +1501,29 @@ function ngCheck(profileText, extraWords) {
     return 'NG未経験(飲食店経験年数が未経験)';
   }
   const t = zenToHan(text);
-  let age = null;
-  // 「年齢」ラベルの直後(改行含む8文字以内)の数値
-  let m = t.match(/年齢[^0-9]{0,8}([0-9]{1,3})/);
-  if (m) age = parseInt(m[1], 10);
-  if (age === null) { m = t.match(/([0-9]{2})歳/); if (m) age = parseInt(m[1], 10); }
-  if (age !== null && (age < 15 || age > 99)) age = null;
+  // 年齢の読み取り。表記ゆれが多いので候補を集め、15〜99歳に収まるものを使う
+  // (「生年月日 / 年齢 → 1997/07/10 29才」のように、生年月日と同じ欄の場合がある)
+  // 自己PRの「20歳から飲食業界で」等を年齢と誤読しないよう、
+  // 「年齢」「生年月日」の欄に紐づく数値を先に見る
+  const ageCands = [];
+  let m;
+  if (o.fields) {
+    for (const k of ['年齢', '生年月日/年齢', '生年月日・年齢', '生年月日']) {
+      const v = zenToHan(o.fields[k] || '');
+      const mm = v.match(/([0-9]{1,3})[ \t]*[歳才]/) || v.match(/^[ \t]*([0-9]{1,3})[ \t]*$/);
+      if (mm) { ageCands.push(parseInt(mm[1], 10)); break; }
+    }
+  }
+  m = t.match(/(?:年齢|生年月日)[\s\S]{0,30}?([0-9]{1,3})[ \t　]*[歳才]/); // 「年齢 → 29才」
+  if (m) ageCands.push(parseInt(m[1], 10));
+  m = t.match(/年齢[^0-9]{0,10}([0-9]{1,3})(?![0-9])/);     // 「年齢 29」(西暦は除外)
+  if (m) ageCands.push(parseInt(m[1], 10));
+  m = t.match(/^[0-9]{4,}[ \t　]*[（(]([0-9]{1,3})[）)]/m);  // 見出しの「101906 （29）」
+  if (m) ageCands.push(parseInt(m[1], 10));
+  m = t.match(/([0-9]{1,3})[ \t　]*[歳才]/);                // 最後の手段: 本文中の「38歳」
+  if (m) ageCands.push(parseInt(m[1], 10));
+  let age = ageCands.find(a => a >= 15 && a <= 99);
+  if (age === undefined) age = null;
 
   let companies = null;
   // ① 「◯社経験」表記
@@ -1257,7 +1614,7 @@ function showBatchCounter(b) {
   const counts = { sent: 0, ready: 0, skip: 0, error: 0 };
   (b.log || []).forEach(e => { if (counts[e.result] !== undefined) counts[e.result]++; });
   const done = (b.log || []).length;
-  const mainLabel = b.dryRun ? '準備OK' : '送信';
+  const mainLabel = b.dryRun ? '準備OK' : '完了';
   const mainCount = b.dryRun ? counts.ready : counts.sent;
 
   let el = document.getElementById('scout-batch-counter');
@@ -1274,11 +1631,26 @@ function showBatchCounter(b) {
   el.style.display = 'block';
   el.innerHTML =
     `<div style="font-size:11px;color:#5f6368;margin-bottom:2px;">` +
-    `自動スカウト稼働中${b.dryRun ? '（ドライラン）' : ''}</div>` +
+    `処理中${b.dryRun ? '（確認モード）' : ''}</div>` +
     `<div style="font-size:22px;font-weight:bold;color:#1a73e8;line-height:1.1;">` +
+    `<span style="font-size:12px;font-weight:normal;color:#5f6368;">今回 </span>` +
     `${mainLabel} ${mainCount}<span style="font-size:13px;font-weight:normal;">件</span></div>` +
-    `<div style="font-size:11px;color:#5f6368;margin-top:3px;">` +
-    `処理済み ${done}件（スキップ ${counts.skip} / エラー ${counts.error}）</div>`;
+    `<div style="font-size:11px;color:#5f6368;margin:3px 0 2px;">` +
+    `処理済み ${done}件（対象外 ${counts.skip} / エラー ${counts.error}）</div>` +
+    // バッチをやり直しても消えない累計。「動」で0に戻る今回分と区別する
+    `<div style="font-size:11px;color:#202124;margin-bottom:8px;padding-top:4px;` +
+    `border-top:1px dashed #dadce0;">本日 <b id="scoutCounterToday">…</b>件</div>` +
+    // どの画面からでも止められるよう、カウンターに停止ボタンを持たせる
+    `<button id="scoutCounterStopBtn" style="width:100%;padding:6px 0;border:none;border-radius:6px;` +
+    `background:#b3261e;color:#fff;cursor:pointer;font-size:12px;font-weight:bold;">■ 停止</button>`;
+  // innerHTMLで作り直すため、毎回ハンドラを付け直す
+  const stopBtn = document.getElementById('scoutCounterStopBtn');
+  if (stopBtn) stopBtn.addEventListener('click', requestBatchStop);
+  // 本日の送信数は非同期で取得して後から埋める
+  getScoutCount().then(n => {
+    const t = document.getElementById('scoutCounterToday');
+    if (t) t.textContent = n;
+  });
 }
 
 function hideBatchCounter() {
@@ -1301,12 +1673,12 @@ function renderBatchPanel() {
     'position:fixed;bottom:16px;left:260px;z-index:99999;display:flex;gap:6px;' +
     'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
   p.innerHTML =
-    batchMiniBtn('batchDryBtn', '試', 'ドライラン開始(送信しない)', '#5f6368') +
-    batchMiniBtn('batchLiveBtn', '動', '自動スカウト開始(本番・自動送信)', '#1a73e8') +
-    batchMiniBtn('batchResumeBtn', '再', '中断した処理を再開(スリープ復帰後など)', '#e8710a') +
+    batchMiniBtn('batchDryBtn', '試', '確認モードで開始（送信しない）', '#5f6368') +
+    batchMiniBtn('batchLiveBtn', '動', '開始（本番）', '#1a73e8') +
+    batchMiniBtn('batchResumeBtn', '再', '中断した処理を再開', '#e8710a') +
     batchMiniBtn('batchStopBtn', '止', '停止', '#b3261e') +
-    batchMiniBtn('batchReportBtn', '報', '前回のレポートを表示', '#188038') +
-    batchMiniBtn('batchNgWordBtn', '語', '対象外にするNGワードの設定', '#7b1fa2');
+    batchMiniBtn('batchReportBtn', '報', '前回の結果を表示', '#188038') +
+    batchMiniBtn('batchNgWordBtn', '語', '対象外にする語の設定', '#7b1fa2');
   document.body.appendChild(p);
   document.getElementById('batchNgWordBtn').addEventListener('click', showNgWordEditor);
   document.getElementById('batchDryBtn').addEventListener('click', () => startBatch(true));
@@ -1333,6 +1705,7 @@ async function showNgWordEditor() {
   if (old) old.remove();
 
   const custom = await getCustomNgWords();
+  const nameNgOn = await getForeignNameNg();
   const ngReg = await getNgRegistry();
   const ngCount = Object.keys(ngReg).length;
   const builtinOcc = NG_OCCUPATIONS.map(g => g.join('／')).join('、');
@@ -1356,7 +1729,17 @@ async function showNgWordEditor() {
     `<div style="font-size:11px;color:#5f6368;margin-top:10px;line-height:1.6;">` +
     `<b>もとから設定されているNG（変更不要）</b><br>` +
     `職種: ${builtinOcc}<br>キーワード: ${builtinKw}<br>` +
-    `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。</div>` +
+    `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。<br>` +
+    `基本情報しか登録していない方は、NG登録せずその回だけ見送ります（次回また対象に含まれます）。</div>` +
+    `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
+    `<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">` +
+    `<input type="checkbox" id="ngNameChk"${nameNgOn ? ' checked' : ''} style="margin-top:2px;">` +
+    `<span style="font-size:12px;line-height:1.6;">お名前が<b>すべてローマ字</b>または` +
+    `<b>すべてカタカナ</b>の方を対象外にする<br>` +
+    `<span style="font-size:11px;color:#5f6368;">` +
+    `氏名の欄がある画面でだけ働きます。<b>グルメキャリーのプロフィールには氏名欄が無いため、` +
+    `現状この判定は行われません</b>（氏名が表示されるようになった場合に効きます）。` +
+    `</span></span></label></div>` +
     `<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
     `<div style="font-size:12px;font-weight:bold;margin-bottom:4px;">NG記録のリセット</div>` +
     `<div style="font-size:11px;color:#5f6368;line-height:1.6;margin-bottom:8px;">` +
@@ -1389,6 +1772,8 @@ async function showNgWordEditor() {
     const words = document.getElementById('ngWordArea').value
       .split('\n').map(s => s.trim()).filter(s => s.length > 0);
     await setCustomNgWords(words);
+    const nameChk = document.getElementById('ngNameChk');
+    if (nameChk) await setForeignNameNg(nameChk.checked);
     el.remove();
     showBatchToast(`NGワードを保存しました（追加分 ${words.length}語）`);
     setTimeout(hideBatchToast, 4000);
@@ -1411,38 +1796,269 @@ async function collectIdsOnPage(excludeIds) {
   return ids;
 }
 
-// ── 一覧の「次へ」リンクを探す ──
-function findNextPageLink() {
-  const links = [...document.querySelectorAll('a')].filter(a => {
-    if (a.closest('#scout-batch-panel')) return false;
-    const t = (a.textContent || '').trim();
-    return t === '次へ' || t === '次へ >' || t === '>' || t === '次';
+// ── 一覧ページの表から氏名を読み取る(会員ID → 氏名) ──
+// プロフィール画面に氏名欄が無い場合の保険。
+// 見出し(th)で氏名の列を特定できたときだけ読み取り、
+// 特定できなければ何も返さない(別の列を氏名と誤認しないため)
+function collectNamesOnPage() {
+  const names = {};
+  document.querySelectorAll('table').forEach(table => {
+    const headRow = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!headRow) return;
+    const heads = [...headRow.children].map(c => (c.textContent || '').replace(/[\s　]+/g, '').trim());
+    const col = heads.findIndex(h =>
+      h && !NAME_READING_RE.test(h) && NAME_FIELD_LABELS.some(l => h === l));
+    if (col < 0) return;
+    table.querySelectorAll('tr').forEach(tr => {
+      const link = tr.querySelector('a[href*="/member/detail/index/"]');
+      if (!link) return;
+      const m = (link.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+      if (!m) return;
+      // 列数が見出し行と違う行は、列の位置がずれて別の値を拾うため使わない
+      if (tr.children.length !== heads.length) return;
+      const cell = tr.children[col];
+      if (!cell) return;
+      const v = cleanNameValue(cell.textContent || '');
+      if (v) names[m[1]] = v;
+    });
   });
-  // hrefを持つ有効なリンクのみ(最終ページでは無効化されていることがある)
-  return links.find(a => {
-    const href = a.getAttribute('href') || '';
-    return href && href !== '#' && !a.classList.contains('disabled');
+  return names;
+}
+
+// ── 検索フォームの保存と再送信 ──
+// このサイトのページ送りは「検索フォームの再送信」で動く。
+// プロフィール画面を経由して一覧に戻るとフォームの中身が空になるうえ、
+// 都道府県のように「選択」ダイアログで作られる項目は、まっさらな画面では
+// 入力欄そのものが存在しないため、値を書き戻すこともできない。
+// そこで、バッチ開始時の検索条件をまるごと覚えておき、一覧に戻るときは
+// 自前のフォームで同じ内容を送信し直す(サイトの入力チェックを経由しない)。
+function findSearchForm() {
+  const forms = [...document.querySelectorAll('form')].filter(f => !f.closest('#scout-batch-panel'));
+  if (!forms.length) return null;
+  // ①「この条件で検索する」ボタンを持つフォーム(いちばん確実)
+  const byButton = forms.find(f =>
+    [...f.querySelectorAll('input[type="submit"], input[type="button"], button, a')].some(el => {
+      const t = (el.tagName === 'INPUT' ? el.value : el.textContent) || '';
+      return /この条件で検索|検索する/.test(t);
+    }));
+  if (byButton) return byButton;
+  // ② 検索条件の項目名を含むフォーム
+  const byField = forms.find(f => /希望雇用形態|希望業態|希望勤務地|現住所/.test(f.textContent || ''));
+  if (byField) return byField;
+  // ③ 最後の手段: 入力欄がいちばん多いフォーム
+  return forms.reduce((best, f) => {
+    const n = f.querySelectorAll('input, select, textarea').length;
+    return n > (best ? best.querySelectorAll('input, select, textarea').length : -1) ? f : best;
+  }, null);
+}
+
+// ページ番号を保持する隠しフィールド。書き戻すとページ送りが1ページ目に戻るため触らない
+const PAGING_FIELD_RE = /^(page|pageno|page_no|pagenum|pageindex|p|offset|start)$/i;
+
+// 検索条件ではなく候補者一覧の選択チェックボックス等は対象外にする
+function isCandidateRowField(el) {
+  const tr = el.closest('tr');
+  return !!(tr && tr.querySelector('a[href*="/member/detail/index/"]'));
+}
+
+// ページ番号の項目名(この値を書き換えて目的のページを取り出す)
+const PAGE_NUMBER_FIELD_RE = /^(page|pageno|page_no|pagenum|pageindex|nowpage|currentpage)$/i;
+
+function serializeSearchForm() {
+  const form = findSearchForm();
+  if (!form) return null;
+  const data = [];
+  const pageNames = [];
+  form.querySelectorAll('input, select, textarea').forEach(el => {
+    if (!el.name || el.disabled) return;
+    if (el.type === 'submit' || el.type === 'button' || el.type === 'file' || el.type === 'password') return;
+    if (isCandidateRowField(el)) return;         // 一覧の選択チェックは触らない
+    if (PAGE_NUMBER_FIELD_RE.test(el.name)) {    // ページ番号は覚えるが値は使わない
+      if (!pageNames.includes(el.name)) pageNames.push(el.name);
+      return;
+    }
+    if (PAGING_FIELD_RE.test(el.name)) return;   // offset等も送信時に指定し直す
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      data.push({ name: el.name, value: el.value, checked: el.checked, type: el.type });
+    } else if (el.tagName === 'SELECT' && el.multiple) {
+      data.push({ name: el.name, values: [...el.selectedOptions].map(o => o.value), type: 'select-multiple' });
+    } else {
+      data.push({ name: el.name, value: el.value, type: el.type || el.tagName.toLowerCase() });
+    }
+  });
+  // 中身がほとんど無いフォームは「空の状態」なので覚えない
+  const filled = data.filter(d => d.checked || (d.value && d.value.length) || (d.values && d.values.length));
+  if (!filled.length) return null;
+  return {
+    action: form.getAttribute('action') || location.pathname,
+    method: (form.getAttribute('method') || 'post').toLowerCase(),
+    fields: data,
+    pageNames
+  };
+}
+
+// 覚えた検索条件を、自前のフォームで送信し直して一覧を開く。
+// サイトの「次へ」と違って画面の入力チェックを通らないため、
+// プロフィール画面を経由してフォームが空になっていても確実に開ける
+function submitSavedSearch(saved, pageNo) {
+  if (!saved || !saved.fields || !saved.fields.length) return false;
+  const f = document.createElement('form');
+  f.method = saved.method === 'get' ? 'get' : 'post';
+  f.action = saved.action || location.pathname;
+  f.style.display = 'none';
+  const add = (name, value) => {
+    const i = document.createElement('input');
+    i.type = 'hidden';
+    i.name = name;
+    i.value = value == null ? '' : String(value);
+    f.appendChild(i);
+  };
+  saved.fields.forEach(d => {
+    if (d.type === 'checkbox' || d.type === 'radio') {
+      if (d.checked) add(d.name, d.value);       // 未チェックは送らない(ブラウザと同じ挙動)
+    } else if (d.type === 'select-multiple') {
+      (d.values || []).forEach(v => add(d.name, v));
+    } else {
+      add(d.name, d.value);
+    }
+  });
+  if (pageNo && saved.pageNames && saved.pageNames.length) {
+    saved.pageNames.forEach(n => add(n, pageNo));
+  }
+  document.body.appendChild(f);
+  f.submit();
+  return true;
+}
+
+// 一覧へ戻る(覚えた条件で送信し直す。無理なら元のURLへ)
+function gotoListPage(b, pageNo) {
+  if (b && b.searchForm && submitSavedSearch(b.searchForm, pageNo)) return;
+  location.href = (b && b.listUrl) || '/shop-pc/member/list';
+}
+
+function restoreSearchForm(data) {
+  if (!data || !data.length) return false;
+  const form = findSearchForm();
+  if (!form) return false;
+  let restored = 0;
+  // 注意: ここでは change イベントを発火させない。
+  // 表示件数の選択などは変更時に自動で再検索する作りのことがあり、
+  // 書き戻した瞬間にページが飛んでしまうため。フォーム送信時に値は読まれる
+  data.forEach(d => {
+    const els = [...form.querySelectorAll(`[name="${CSS.escape(d.name)}"]`)]
+      .filter(el => !isCandidateRowField(el));
+    if (!els.length) return;
+    if (d.type === 'checkbox' || d.type === 'radio') {
+      const el = els.find(x => x.value === d.value) || els[0];
+      el.checked = d.checked;
+      restored++;
+    } else if (d.type === 'select-multiple') {
+      const el = els[0];
+      [...el.options].forEach(o => { o.selected = (d.values || []).includes(o.value); });
+      restored++;
+    } else {
+      els[0].value = d.value;
+      restored++;
+    }
+  });
+  return restored > 0;
+}
+
+// ページ送りのクリック中だけ、サイトのアラートを止める(処理が固まるのを防ぐ)。
+// 指示はページ側へ非同期で伝わるため、有効になった合図を待ってから次に進む
+function suppressSiteAlert(ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const handler = (e) => {
+      if (e.source !== window || e.data?.type !== 'scout_alert_suppress_ready') return;
+      if (done) return;
+      done = true;
+      window.removeEventListener('message', handler);
+      resolve(true);
+    };
+    window.addEventListener('message', handler);
+    window.postMessage({ type: 'scout_suppress_alert', ms: ms || 8000 }, '*');
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('message', handler);
+      resolve(false);
+    }, 1500);
+  });
+}
+function restoreSiteAlert() {
+  window.postMessage({ type: 'scout_restore_alert' }, '*');
+}
+
+// 現在のページ番号(ページ送りの見出しでリンクになっていない数字)
+function currentPageNumber() {
+  const nav = [...document.querySelectorAll('a')].find(a => (a.textContent || '').trim() === '次へ');
+  const box = nav ? nav.parentElement : null;
+  if (box) {
+    const active = [...box.children].find(c => c.tagName !== 'A' && /^\d+$/.test((c.textContent || '').trim()));
+    if (active) return parseInt(active.textContent.trim(), 10);
+  }
+  return null;
+}
+
+// ページ番号のリンク(「次へ」が効かない場合の代替)
+function findPageNumberLink(num) {
+  if (!num) return null;
+  return [...document.querySelectorAll('a')].find(a => {
+    if (a.closest('#scout-batch-panel')) return false;
+    return (a.textContent || '').trim() === String(num);
+  }) || null;
+}
+
+// ── 一覧の「次へ」リンクを探す ──
+// このサイトのページ送りはJavaScript式(href="javascript:..." や "#")なので、
+// hrefの内容では有効性を判断できない。無効化クラスの有無だけで判定する
+function findNextPageLink() {
+  const links = [...document.querySelectorAll('a, button')].filter(el => {
+    if (el.closest('#scout-batch-panel')) return false;
+    const t = (el.textContent || '').trim();
+    return t === '次へ' || t === '次へ >' || t === '>' || t === '次' || t === '次のページ';
+  });
+  return links.find(el => {
+    if (el.disabled) return false;
+    const cls = el.className || '';
+    return !/disabled|inactive|is-disabled/i.test(cls);
   }) || null;
 }
 
 async function startBatch(dryRun) {
   const existing = await getBatch();
-  if (existing && existing.active) { showBatchToast('すでに実行中です。停止するには「止」を押してください'); return; }
+  if (existing && existing.active) { showBatchToast('すでに動いています。止めるには「止」を押してください'); return; }
   let queue = await collectIdsOnPage(null);
   if (BATCH_MAX > 0) queue = queue.slice(0, BATCH_MAX);
-  if (!queue.length) { showBatchToast('この一覧に処理対象の候補者が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
+  // このページが処理済みの人だけでも中止しない。次のページから探し始める
+  const startNote = queue.length
+    ? `このページの${queue.length}件から開始し、終わり次第ページを進めて続けます。`
+    : `このページは処理済みの方だけのため、次のページから対象を探して始めます。`;
   const limitNote =
-    `このページの${queue.length}件から開始し、終わり次第ページを進めて続けます。\n` +
-    `件数の上限はありません。「止」を押すまで、または候補者がいなくなるまで動き続けます。`;
+    `${startNote}\n件数の上限はありません。「止」を押すまで、または候補者がいなくなるまで動き続けます。`;
   if (!dryRun && !confirm(`本番モード: 検証を通過したメールは確認なしで自動送信されます。\n${limitNote}\nよろしいですか？`)) return;
   if (dryRun && !confirm(`ドライラン: 送信ボタンは押さずに生成と検証だけを行います。\n${limitNote}\nよろしいですか？`)) return;
   await setBatch({
-    active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false,
+    active: true, dryRun, queue, idx: 0,
+    phase: queue.length ? 'profile' : 'refill',
+    regen: 0, stopped: false,
     log: [], startedAt: Date.now(),
-    listUrl: location.href, emptyPages: 0
+    listUrl: location.href, emptyPages: 0,
+    names: collectNamesOnPage(),
+    // 一覧に戻るときに送信し直すための検索条件と、いま見ているページ番号
+    searchForm: serializeSearchForm(),
+    pageNo: currentPageNumber() || 1,
+    lastPageSig: pageSignature()
   });
-  showBatchCounter(await getBatch());
-  gotoCurrent();
+  const b = await getBatch();
+  showBatchCounter(b);
+  if (queue.length) {
+    gotoCurrent();
+  } else {
+    showBatchToast('このページは処理済みです。対象がいるページを探します...');
+    batchRefillStep();
+  }
 }
 
 async function requestBatchStop() {
@@ -1490,8 +2106,46 @@ async function finishBatch(b, msg) {
   await setBatch(b);
   await new Promise(res => chrome.storage.local.set({ autoLastReport: b }, res));
   hideBatchCounter();
-  if (msg) showBatchToast(msg);
-  showReport(b);
+  hideBatchToast();
+  // 完了時は画面中央に結果を開かず、右下に控えめなお知らせを出すだけにする
+  // (詳しい結果は、お知らせの「詳細」か「報」ボタンから開く)
+  showDoneNotice(b, msg);
+}
+
+// ── 完了のお知らせ(画面右下・控えめな表示) ──
+function showDoneNotice(b, msg) {
+  const old = document.getElementById('scout-done-notice');
+  if (old) old.remove();
+
+  const counts = { sent: 0, ready: 0, skip: 0, error: 0 };
+  (b.log || []).forEach(e => { if (counts[e.result] !== undefined) counts[e.result]++; });
+  const main = b.dryRun ? counts.ready : counts.sent;
+
+  const el = document.createElement('div');
+  el.id = 'scout-done-notice';
+  el.style.cssText =
+    'position:fixed;right:20px;bottom:20px;z-index:99999;background:#fff;' +
+    'border:1px solid #dadce0;border-left:4px solid #188038;border-radius:8px;' +
+    'padding:12px 14px;width:270px;box-shadow:0 4px 16px rgba(0,0,0,0.16);' +
+    'color:#202124;font-size:12px;line-height:1.6;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  el.innerHTML =
+    `<div style="display:flex;align-items:flex-start;justify-content:space-between;">` +
+    `<div style="font-weight:bold;">処理が完了しました</div>` +
+    `<span id="scoutDoneClose" title="閉じる" style="cursor:pointer;color:#5f6368;` +
+    `font-size:14px;line-height:1;padding:0 2px;">×</span></div>` +
+    `<div style="margin-top:4px;">完了 <b>${main}</b>件 ／ 対象外 ${counts.skip}件` +
+    `${counts.error ? ` ／ エラー ${counts.error}件` : ''}</div>` +
+    (msg ? `<div style="margin-top:6px;color:#5f6368;font-size:11px;">${msg}</div>` : '') +
+    `<div style="margin-top:8px;"><span id="scoutDoneDetail" style="cursor:pointer;color:#1a73e8;` +
+    `text-decoration:underline;font-size:11px;">詳細を見る</span></div>`;
+  document.body.appendChild(el);
+
+  document.getElementById('scoutDoneClose').addEventListener('click', () => el.remove());
+  document.getElementById('scoutDoneDetail').addEventListener('click', () => {
+    el.remove();
+    showReport(b);
+  });
 }
 
 // メール全文は直近この件数分だけ保持する
@@ -1522,20 +2176,42 @@ async function recordAndNext(result, reason, mail) {
   if (b.idx >= b.queue.length) {
     b.phase = 'refill';
     await setBatch(b);
-    showBatchToast(`${b.log.length}件 処理済み。一覧に戻って次の候補者を探します...`);
-    const url = b.listUrl || '/shop-pc/member/list';
-    setTimeout(() => { location.href = url; }, wait);
+    showBatchToast(`${b.log.length}件 完了。一覧に戻って次を探します...`);
+    // 覚えた検索条件で一覧を開き直す(現在のページのまま)
+    setTimeout(() => gotoListPage(b, b.pageNo || null), wait);
     return;
   }
 
   await setBatch(b);
-  showBatchToast(`自動スカウト ${b.log.length}件 処理済み。${Math.round(wait / 1000)}秒後に次へ...`);
+  showBatchToast(`${b.log.length}件 完了。${Math.round(wait / 1000)}秒後に次へ...`);
   setTimeout(gotoCurrent, wait);
 }
 
 // ── 一覧ページでキューを補充する。無ければ次ページへ進む ──
 let refillRetry = 0;
+let refillInFlight = false;
+let refillSeq = 0;
+// ページ送りを予約したら、そのページでは以後の補充処理を止める
+// (DOM監視からの再呼び出しで二重にページを進めないため。ページ遷移で自動的に解除される)
+let pagingScheduled = false;
 async function batchRefillStep() {
+  // 二重実行の防止。
+  // AJAXでページ送りすると DOM監視(MutationObserver)経由の routeBatch と
+  // クリック後の保険タイマーの両方から呼ばれ得るため、同時実行を禁止する
+  // (同時に走ると片方がキュー追加、もう片方が「空ページ」と誤判定して
+  //  次ページへ進んでしまい、処理が飛ぶ)
+  if (refillInFlight) return;
+  refillInFlight = true;
+  refillSeq++;
+  try {
+    await batchRefillStepInner();
+  } finally {
+    refillInFlight = false;
+  }
+}
+
+async function batchRefillStepInner() {
+  if (pagingScheduled) return; // 次ページへの移動を予約済み
   const b = await getBatch();
   if (!b || !b.active) return;
   if (b.stopped) { await finishBatch(b); return; }
@@ -1551,37 +2227,145 @@ async function batchRefillStep() {
   }
   refillRetry = 0;
 
+  // ページ送りをしたのに中身が前と同じなら、それ以上先には進めない
+  // (最終ページに達した場合など。無限に同じページを見続けないための歯止め)
+  const sig = pageSignature();
+  if (b.pagingTried && sig && sig === b.lastPageSig) {
+    await finishBatch(b, 'これ以上ページを進められないため終了しました');
+    return;
+  }
+  b.lastPageSig = sig;
+  b.pagingTried = false;
+
   // このバッチで既に処理した候補者は除外(送信済み・NG済みはレジストリ側で除外)
   const fresh = await collectIdsOnPage(b.queue);
 
   if (fresh.length) {
     b.queue = b.queue.concat(fresh);
+    b.names = Object.assign(b.names || {}, collectNamesOnPage());
     b.phase = 'profile';
     b.emptyPages = 0;
     b.listUrl = location.href;
+    // 検索条件が画面に残っていれば覚え直す(一覧に戻るときに送信し直すため)
+    const form = serializeSearchForm();
+    if (form) b.searchForm = form;
+    b.pageNo = currentPageNumber() || b.pageNo || 1;
     await setBatch(b);
-    showBatchToast(`このページで${fresh.length}件の候補者を追加。処理を続けます...`);
+    showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
     return;
   }
 
-  // このページに新規候補者がいない → 次ページへ
+  // このページに新規候補者がいない
   b.emptyPages = (b.emptyPages || 0) + 1;
+
+  // 自動ページ送りが無効な場合は、ここで終了して次の手を案内する
+  if (!BATCH_AUTO_PAGING) {
+    await finishBatch(b,
+      'このページに未処理の候補者がいなくなりました。' +
+      '表示件数を増やす（20件→100件など）か、検索条件を変えてから再度「動」を押してください。');
+    return;
+  }
+
   if (b.emptyPages >= BATCH_MAX_EMPTY_PAGES) {
     await finishBatch(b, '対象の候補者がいなくなったため終了しました');
     return;
   }
+  const shownPage = currentPageNumber();
+  const nowPage = b.pageNo || shownPage || 1;
+  const nextPage = nowPage + 1;
+
+  // ① 覚えた条件でページ番号を指定して送信し直す(最優先。入力チェックを通らない)
+  if (b.searchForm && b.searchForm.pageNames && b.searchForm.pageNames.length) {
+    b.pageNo = nextPage;
+    b.pagingTried = true; // 進んだのに中身が同じなら最終ページと判断する
+    await setBatch(b);    // phaseは'refill'のまま
+    showBatchToast(`このページは処理済みです。${nextPage}ページ目を確認します...（${b.emptyPages}）`);
+    pagingScheduled = true;
+    setTimeout(() => { gotoListPage(b, nextPage); }, 2000);
+    return;
+  }
+
+  // ② ページ番号の項目が分からない場合は、画面のページ送りをクリックする
   const next = findNextPageLink();
-  if (!next) {
+  const numberLink = findPageNumberLink(shownPage ? shownPage + 1 : null);
+  if (!next && !numberLink) {
     await finishBatch(b, '最終ページまで処理したため終了しました');
     return;
   }
-  await setBatch(b); // phaseは'refill'のまま
-  showBatchToast('このページは処理済みです。次のページへ進みます...');
-  setTimeout(() => {
-    const href = next.getAttribute('href');
-    if (href && href !== '#') { location.href = next.href; } else { next.click(); }
+  b.pageNo = nextPage;
+  b.pagingTried = true; // 進んだのに中身が同じなら最終ページと判断する
+  await setBatch(b);
+  showBatchToast(`このページは処理済みです。次のページへ進みます... (${b.emptyPages}/${BATCH_MAX_EMPTY_PAGES})`);
+  pagingScheduled = true;
+  setTimeout(async () => {
+    // 条件が足りずアラートが出ても固まらないよう、クリックの前に止めておく
+    // (指示は非同期で伝わるため、有効になるのを待ってからクリックする)
+    await suppressSiteAlert(15000);
+    // 画面に入力欄が残っていれば条件を書き戻す(あれば成功率が上がる)
+    restoreSearchForm(b.searchForm && b.searchForm.fields);
+
+    const seqAtClick = refillSeq;
+    const before = pageSignature();
+    // JavaScript式のページ送りにも対応するため、必ずクリックで遷移させる
+    (next || numberLink).click();
+    // 「次へ」で動かなかった場合に備え、少し待ってページ番号のリンクも試す
+    if (next && numberLink) {
+      setTimeout(() => {
+        if (pageSignature() === before && refillSeq === seqAtClick) numberLink.click();
+      }, 4000);
+    }
+    // AJAXで表が差し替わる場合はページが再読み込みされず、
+    // content scriptも再実行されないため、自分で再チェックする
+    // (ページ遷移が起きた場合はこのタイマーごと破棄される)
+    batchRouted = false;
+    waitForListChange(before, seqAtClick, 0);
   }, 2000);
+}
+
+// ページ送りが失敗した(サイトのアラートで止められた)ことを覚えておく
+let lastSuppressedAlert = '';
+window.addEventListener('message', (e) => {
+  if (e.source !== window || e.data?.type !== 'scout_alert_suppressed') return;
+  lastSuppressedAlert = String(e.data.message || '').slice(0, 100);
+});
+
+// 一覧に並んでいる候補者IDの並び。ページが切り替わったかの判定に使う
+function pageSignature() {
+  const ids = [];
+  document.querySelectorAll('a[href*="/member/detail/index/"]').forEach(a => {
+    const m = (a.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
+    if (m) ids.push(m[1]);
+  });
+  return ids.join(',');
+}
+
+// ページ送りクリック後、一覧の中身が入れ替わるのを待ってから補充を再開する。
+// AJAXの読み込みが遅い場合に、古いページを見て「処理済み」と誤判定し
+// ページを飛ばしてしまうのを防ぐ(最大約12秒待って、その後は続行)
+function waitForListChange(before, seqAtClick, attempt) {
+  setTimeout(async () => {
+    if (refillSeq !== seqAtClick) return; // 他経路で既に補充が走った
+    if (pageSignature() !== before) { lastSuppressedAlert = ''; pagingScheduled = false; batchRefillStep(); return; }
+    if (attempt >= 3) {
+      // サイト側のアラートで止められた場合は、原因を添えて終了する
+      // (同じ操作を繰り返しても進めないため)
+      if (lastSuppressedAlert) {
+        const b = await getBatch();
+        if (b && b.active) {
+          await finishBatch(b,
+            `次のページへ進めませんでした（画面の案内: ${lastSuppressedAlert}）。` +
+            `検索条件を入れ直して検索し直してから、もう一度「動」を押してください。`);
+          return;
+        }
+      }
+      // 予約を解除して、同じページのままかどうかを補充処理に判定させる
+      pagingScheduled = false;
+      batchRefillStep();
+      return;
+    }
+    waitForListChange(before, seqAtClick, attempt + 1);
+  }, 3000);
 }
 
 // ── ページ種別ごとの処理振り分け(tryInitから毎回呼ばれる。1ページ1回だけ実行) ──
@@ -1611,14 +2395,13 @@ async function routeBatch() {
     if (isListPage()) {
       setTimeout(batchRefillStep, 1500);
     } else {
-      // listUrlが無い場合(旧バージョンの残存状態など)は検索一覧トップへ戻す
-      const url = b.listUrl || '/shop-pc/member/list';
-      setTimeout(() => { location.href = url; }, 1500);
+      // 一覧以外にいる場合は、覚えた検索条件で一覧を開き直す
+      setTimeout(() => gotoListPage(b, b.pageNo || null), 1500);
     }
     return;
   }
 
-  showBatchToast(`自動スカウト: ID ${target} を処理中...`);
+  showBatchToast(`${b.log.length + 1}件目を処理中...`);
 
   if (b.phase === 'profile' && getProfilePageMemberId() === target) {
     setTimeout(() => batchProfileStep(target), 2000);
@@ -1656,10 +2439,9 @@ async function resumeBatch() {
   if (b.phase === 'scout' || b.phase === 'postSend') b.phase = 'profile';
   await setBatch(b);
   showBatchCounter(b);
-  showBatchToast(`${b.log.length}件まで完了しています。続きから再開します...`);
+  showBatchToast(`${b.log.length}件まで完了。続きから再開します...`);
   if (b.phase === 'refill') {
-    const url = b.listUrl || '/shop-pc/member/list';
-    setTimeout(() => { location.href = url; }, 1500);
+    setTimeout(() => gotoListPage(b, b.pageNo || null), 1500);
   } else {
     setTimeout(gotoCurrent, 1500);
   }
@@ -1674,11 +2456,18 @@ async function batchProfileStep(target) {
   }
   if (!text || text.length < 200) { await recordAndNext('skip', 'プロフィール取得失敗'); return; }
 
-  const ng = ngCheck(text, await getCustomNgWords());
+  // 氏名は 画面の表 → プロフィール本文 → 一覧で拾った氏名 の順に見る
+  const bNames = await getBatch();
+  const ng = ngCheck(text, await getCustomNgWords(), {
+    nameNg: await getForeignNameNg(),
+    fields: readProfileFieldsFromDom(),
+    fallbackName: (bNames && bNames.names) ? bNames.names[target] : null
+  });
   if (ng) {
-    // 決定的なNG(職種・NGワード・未経験・転職回数)は記録して次回以降のキューから除外する
-    // (「判定不能」は情報が後から埋まる可能性があるため記録しない)
-    if (!ng.startsWith('判定不能')) {
+    // 決定的なNG(職種・NGワード・氏名・未経験・転職回数)は記録して次回以降のキューから除外する
+    // (「判定不能」「情報不足」は、あとから本人が記入する可能性があるため記録しない。
+    //  次回のバッチでもう一度プロフィールを見に行く)
+    if (!ng.startsWith('判定不能') && !ng.startsWith('情報不足')) {
       await addNgRegistry(target, ng);
     }
     await recordAndNext('skip', ng);
@@ -1712,7 +2501,7 @@ async function batchRequestGenerate(profileText) {
   batchAwait = 'generate';
   batchMail = null;
   armWatchdog('generate');
-  showBatchToast(`自動スカウト ${b.log.length + 1}件目: メール生成中...`);
+  showBatchToast(`${b.log.length + 1}件目: 文面を作成中...`);
   const fullPrompt = `${SYSTEM_PROMPT}\n\n---\n候補者情報:\n${profileText}\n\n上記の候補者情報をもとにスカウトメールを作成してください。出力は件名1行＋空行＋本文のみ。ラベルは不要です。`;
   chrome.runtime.sendMessage({ action: 'openGemini', prompt: fullPrompt, mode: 'generate' });
 }
@@ -1773,7 +2562,7 @@ async function batchHandleGenerated(message) {
   batchMail = { subject: subjectText, body: bodyText };
   batchAwait = 'verify';
   armWatchdog('verify');
-  showBatchToast(`自動スカウト ${b.log.length + 1}件目: AI二次検査中...`);
+  showBatchToast(`${b.log.length + 1}件目: 内容を確認中...`);
   chrome.runtime.sendMessage({ action: 'openGemini', mode: 'verify', prompt: buildVerifyPrompt(subjectText, bodyText) });
 }
 
@@ -1830,7 +2619,7 @@ async function batchHandleVerify(message) {
     await recordAndNext('error', '送信ボタンが見つからない', batchMail);
     return;
   }
-  showBatchToast(`自動スカウト ${b.log.length + 1}件目: 送信します...`);
+  showBatchToast(`${b.log.length + 1}件目: 完了処理中...`);
   btn.click();
   // 15秒たっても画面遷移しない場合は失敗として次へ
   setTimeout(async () => {
@@ -1845,7 +2634,7 @@ async function batchRetryOrSkip(b, reason, mail) {
   if (b.regen < 1) {
     b.regen++;
     await setBatch(b);
-    showBatchToast(`検証不合格のため再生成します(${String(reason).slice(0, 80)})`);
+    showBatchToast(`確認で差し戻し、作り直します(${String(reason).slice(0, 80)})`);
     const profile = await getStoredProfile(b.queue[b.idx]);
     if (profile && profile.text) { batchRequestGenerate(profile.text); return; }
   }
@@ -1877,7 +2666,7 @@ function showReport(b) {
     ? `\n\n※ メール全文は直近${BATCH_KEEP_MAILS}件のみ表示しています（古い${trimmed}件は結果のみ）\n`
     : '';
   const summary =
-    `自動スカウト結果${b.dryRun ? '【ドライラン】' : ''}\n` +
+    `処理結果${b.dryRun ? '【確認モード】' : ''}\n` +
     `送信:${counts.sent}件 / 準備OK:${counts.ready}件 / スキップ:${counts.skip}件 / エラー:${counts.error}件\n\n` +
     lines.join('\n') + trimNote + '\n' + mailDump;
 
