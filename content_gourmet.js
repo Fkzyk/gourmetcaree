@@ -1226,8 +1226,10 @@ const BATCH_MAX = 0;              // 0 = 1ページあたりの取得件数を�
 // 原因を添えて終了する(放置運用でも固まらないようにするため)。
 const BATCH_AUTO_PAGING = true;
 
-// 新規候補ゼロのページが続いたら候補者が尽きたと判断する
-const BATCH_MAX_EMPTY_PAGES = 2;
+// 新規候補ゼロのページが続いたら候補者が尽きたと判断する。
+// 処理済みの方が並ぶページが何ページも続くことがあるため多めにする
+// (1ページの確認は数秒。ページが進まない場合は別の判定で止まる)
+const BATCH_MAX_EMPTY_PAGES = 12;
 const BATCH_BODY_MIN = 300;
 
 // NG職種(過去経歴に1つでもあればNG)。表記ゆれ込み
@@ -2029,23 +2031,34 @@ async function startBatch(dryRun) {
   if (existing && existing.active) { showBatchToast('すでに動いています。止めるには「止」を押してください'); return; }
   let queue = await collectIdsOnPage(null);
   if (BATCH_MAX > 0) queue = queue.slice(0, BATCH_MAX);
-  if (!queue.length) { showBatchToast('この一覧に対象が見つかりません'); setTimeout(hideBatchToast, 4000); return; }
+  // このページが処理済みの人だけでも中止しない。次のページから探し始める
+  const startNote = queue.length
+    ? `このページの${queue.length}件から開始し、終わり次第ページを進めて続けます。`
+    : `このページは処理済みの方だけのため、次のページから対象を探して始めます。`;
   const limitNote =
-    `このページの${queue.length}件から開始し、終わり次第ページを進めて続けます。\n` +
-    `件数の上限はありません。「止」を押すまで、または候補者がいなくなるまで動き続けます。`;
+    `${startNote}\n件数の上限はありません。「止」を押すまで、または候補者がいなくなるまで動き続けます。`;
   if (!dryRun && !confirm(`本番モード: 検証を通過したメールは確認なしで自動送信されます。\n${limitNote}\nよろしいですか？`)) return;
   if (dryRun && !confirm(`ドライラン: 送信ボタンは押さずに生成と検証だけを行います。\n${limitNote}\nよろしいですか？`)) return;
   await setBatch({
-    active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false,
+    active: true, dryRun, queue, idx: 0,
+    phase: queue.length ? 'profile' : 'refill',
+    regen: 0, stopped: false,
     log: [], startedAt: Date.now(),
     listUrl: location.href, emptyPages: 0,
     names: collectNamesOnPage(),
     // 一覧に戻るときに送信し直すための検索条件と、いま見ているページ番号
     searchForm: serializeSearchForm(),
-    pageNo: currentPageNumber() || 1
+    pageNo: currentPageNumber() || 1,
+    lastPageSig: pageSignature()
   });
-  showBatchCounter(await getBatch());
-  gotoCurrent();
+  const b = await getBatch();
+  showBatchCounter(b);
+  if (queue.length) {
+    gotoCurrent();
+  } else {
+    showBatchToast('このページは処理済みです。対象がいるページを探します...');
+    batchRefillStep();
+  }
 }
 
 async function requestBatchStop() {
@@ -2178,6 +2191,9 @@ async function recordAndNext(result, reason, mail) {
 let refillRetry = 0;
 let refillInFlight = false;
 let refillSeq = 0;
+// ページ送りを予約したら、そのページでは以後の補充処理を止める
+// (DOM監視からの再呼び出しで二重にページを進めないため。ページ遷移で自動的に解除される)
+let pagingScheduled = false;
 async function batchRefillStep() {
   // 二重実行の防止。
   // AJAXでページ送りすると DOM監視(MutationObserver)経由の routeBatch と
@@ -2195,6 +2211,7 @@ async function batchRefillStep() {
 }
 
 async function batchRefillStepInner() {
+  if (pagingScheduled) return; // 次ページへの移動を予約済み
   const b = await getBatch();
   if (!b || !b.active) return;
   if (b.stopped) { await finishBatch(b); return; }
@@ -2209,6 +2226,16 @@ async function batchRefillStepInner() {
     return;
   }
   refillRetry = 0;
+
+  // ページ送りをしたのに中身が前と同じなら、それ以上先には進めない
+  // (最終ページに達した場合など。無限に同じページを見続けないための歯止め)
+  const sig = pageSignature();
+  if (b.pagingTried && sig && sig === b.lastPageSig) {
+    await finishBatch(b, 'これ以上ページを進められないため終了しました');
+    return;
+  }
+  b.lastPageSig = sig;
+  b.pagingTried = false;
 
   // このバッチで既に処理した候補者は除外(送信済み・NG済みはレジストリ側で除外)
   const fresh = await collectIdsOnPage(b.queue);
@@ -2251,8 +2278,10 @@ async function batchRefillStepInner() {
   // ① 覚えた条件でページ番号を指定して送信し直す(最優先。入力チェックを通らない)
   if (b.searchForm && b.searchForm.pageNames && b.searchForm.pageNames.length) {
     b.pageNo = nextPage;
-    await setBatch(b); // phaseは'refill'のまま
-    showBatchToast(`このページは処理済みです。${nextPage}ページ目へ進みます...`);
+    b.pagingTried = true; // 進んだのに中身が同じなら最終ページと判断する
+    await setBatch(b);    // phaseは'refill'のまま
+    showBatchToast(`このページは処理済みです。${nextPage}ページ目を確認します...（${b.emptyPages}）`);
+    pagingScheduled = true;
     setTimeout(() => { gotoListPage(b, nextPage); }, 2000);
     return;
   }
@@ -2265,8 +2294,10 @@ async function batchRefillStepInner() {
     return;
   }
   b.pageNo = nextPage;
+  b.pagingTried = true; // 進んだのに中身が同じなら最終ページと判断する
   await setBatch(b);
   showBatchToast(`このページは処理済みです。次のページへ進みます... (${b.emptyPages}/${BATCH_MAX_EMPTY_PAGES})`);
+  pagingScheduled = true;
   setTimeout(async () => {
     // 条件が足りずアラートが出ても固まらないよう、クリックの前に止めておく
     // (指示は非同期で伝わるため、有効になるのを待ってからクリックする)
@@ -2315,7 +2346,7 @@ function pageSignature() {
 function waitForListChange(before, seqAtClick, attempt) {
   setTimeout(async () => {
     if (refillSeq !== seqAtClick) return; // 他経路で既に補充が走った
-    if (pageSignature() !== before) { lastSuppressedAlert = ''; batchRefillStep(); return; }
+    if (pageSignature() !== before) { lastSuppressedAlert = ''; pagingScheduled = false; batchRefillStep(); return; }
     if (attempt >= 3) {
       // サイト側のアラートで止められた場合は、原因を添えて終了する
       // (同じ操作を繰り返しても進めないため)
@@ -2328,6 +2359,8 @@ function waitForListChange(before, seqAtClick, attempt) {
           return;
         }
       }
+      // 予約を解除して、同じページのままかどうかを補充処理に判定させる
+      pagingScheduled = false;
       batchRefillStep();
       return;
     }
