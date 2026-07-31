@@ -432,12 +432,65 @@ function incrementScoutCount() {
   });
 }
 
+// 件数を手で書き換える(押し忘れ・数え間違いの調整用)
+function setScoutCount(count) {
+  return new Promise((resolve) => {
+    const n = Math.max(0, Math.min(999, Math.round(count) || 0));
+    chrome.storage.local.set({ scoutCount: n, scoutCountDate: getTodayKey() }, () => resolve(n));
+  });
+}
+
 function updateBadge(count) {
   const badge = document.getElementById('scoutBadge');
   if (badge) {
     badge.textContent = count;
-    badge.style.display = count > 0 ? 'flex' : 'none';
+    // 0件のときも押せるように表示は残す(数字を手で直せるようにするため)。
+    // ただし色は控えめにして目立たせない
+    badge.style.display = 'flex';
+    badge.style.background = count > 0 ? '#d32f2f' : '#9aa0a6';
   }
+  const inline = document.getElementById('scoutCountValue');
+  if (inline) inline.textContent = count;
+}
+
+// ── バッジをクリックしたときの件数調整パネル ──
+function showCountEditor() {
+  const old = document.getElementById('scout-count-editor');
+  if (old) { old.remove(); return; } // もう一度押したら閉じる
+
+  const el = document.createElement('div');
+  el.id = 'scout-count-editor';
+  el.style.cssText =
+    // ボタンの右隣に出す(進捗トーストと重ならない位置)
+    'position:fixed;bottom:16px;left:320px;z-index:100000;background:#fff;' +
+    'border:1px solid #dadce0;border-radius:10px;padding:8px 10px;' +
+    'box-shadow:0 3px 12px rgba(0,0,0,0.2);color:#202124;font-size:12px;' +
+    'display:flex;align-items:center;gap:8px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+  const btn = (id, label) =>
+    `<button id="${id}" style="width:26px;height:26px;border:1px solid #dadce0;border-radius:6px;` +
+    `background:#f8f9fa;color:#202124;cursor:pointer;font-size:15px;line-height:1;padding:0;">${label}</button>`;
+  el.innerHTML =
+    `<span style="color:#5f6368;">本日</span>` +
+    btn('scoutCountMinus', '−') +
+    `<b id="scoutCountValue" style="min-width:24px;text-align:center;font-size:14px;">0</b>` +
+    btn('scoutCountPlus', '＋') +
+    `<span style="color:#5f6368;">件</span>` +
+    `<button id="scoutCountClose" style="border:none;background:none;color:#5f6368;` +
+    `cursor:pointer;font-size:13px;padding:0 2px;">×</button>`;
+  document.body.appendChild(el);
+
+  const apply = (diff) => {
+    getScoutCount().then(n => setScoutCount(n + diff)).then(n => {
+      updateBadge(n);
+      const c = document.getElementById('scoutCounterToday');
+      if (c) c.textContent = n; // 稼働中のカウンター表示も合わせる
+    });
+  };
+  document.getElementById('scoutCountMinus').addEventListener('click', () => apply(-1));
+  document.getElementById('scoutCountPlus').addEventListener('click', () => apply(1));
+  document.getElementById('scoutCountClose').addEventListener('click', () => el.remove());
+  getScoutCount().then(n => { const v = document.getElementById('scoutCountValue'); if (v) v.textContent = n; });
 }
 
 // ── パネルのHTML作成（フローティングボタン + バッジ）──
@@ -448,7 +501,7 @@ function createPanel() {
     <div id="scoutStatus" class="scout-status" style="display:none;"></div>
     <div class="scout-btn-wrapper">
       <button class="scout-btn scout-btn-primary" id="scoutGenerateBtn"></button>
-      <span id="scoutBadge" class="scout-badge" style="display:none;">0</span>
+      <span id="scoutBadge" class="scout-badge" title="クリックすると件数を手で直せます" style="display:none;">0</span>
     </div>
   `;
   return panel;
@@ -793,6 +846,13 @@ function initPanel() {
   document.body.appendChild(panel);
 
   getScoutCount().then(count => updateBadge(count));
+
+  // バッジをクリックすると、その日の件数を手で増減できる
+  const badgeEl = document.getElementById('scoutBadge');
+  if (badgeEl) {
+    badgeEl.style.cursor = 'pointer';
+    badgeEl.addEventListener('click', (e) => { e.stopPropagation(); showCountEditor(); });
+  }
 
   document.getElementById('scoutGenerateBtn').addEventListener('click', async () => {
     let candidateInfo = '';
