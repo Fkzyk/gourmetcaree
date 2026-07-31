@@ -451,6 +451,42 @@ function updateBadge(count) {
   }
   const inline = document.getElementById('scoutCountValue');
   if (inline) inline.textContent = count;
+  const chip = document.getElementById('scout-count-chip');
+  if (chip) {
+    chip.textContent = count;
+    chip.style.background = count > 0 ? '#d32f2f' : '#9aa0a6';
+  }
+}
+
+// ── どの画面でも件数を直せる小さな丸(左下) ──
+// スカウト画面以外にはバッジが出ないため、常設の丸を置く
+function renderCountChip() {
+  // スカウト画面は生成ボタンのバッジがあるので不要(同じ場所で重なる)
+  if (document.getElementById('scout-ext-panel')) {
+    const dup = document.getElementById('scout-count-chip');
+    if (dup) dup.remove();
+    return;
+  }
+  let chip = document.getElementById('scout-count-chip');
+  if (!chip) {
+    chip = document.createElement('div');
+    chip.id = 'scout-count-chip';
+    chip.title = 'クリックすると件数を手で直せます';
+    chip.style.cssText =
+      'position:fixed;bottom:16px;z-index:99999;width:34px;height:34px;border-radius:50%;' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;' +
+      'font-size:13px;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,0.18);background:#9aa0a6;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Meiryo",sans-serif;';
+    document.body.appendChild(chip);
+    chip.addEventListener('click', (e) => { e.stopPropagation(); showCountEditor(); });
+  }
+  // 一覧ページは操作ボタン(6個)の右隣、それ以外は左下の定位置に置く
+  chip.style.left = document.getElementById('scout-batch-panel') ? '500px' : '260px';
+  // 数字の読み込みは作った直後だけ(tryInitは何度も呼ばれるため)
+  if (!chip.dataset.loaded) {
+    chip.dataset.loaded = '1';
+    getScoutCount().then(n => updateBadge(n));
+  }
 }
 
 // ── バッジをクリックしたときの件数調整パネル ──
@@ -461,8 +497,8 @@ function showCountEditor() {
   const el = document.createElement('div');
   el.id = 'scout-count-editor';
   el.style.cssText =
-    // ボタンの右隣に出す(進捗トーストと重ならない位置)
-    'position:fixed;bottom:16px;left:320px;z-index:100000;background:#fff;' +
+    // ボタンの少し上に出す(一覧ページの操作ボタン列と重ならない位置)
+    'position:fixed;bottom:58px;left:260px;z-index:100000;background:#fff;' +
     'border:1px solid #dadce0;border-radius:10px;padding:8px 10px;' +
     'box-shadow:0 3px 12px rgba(0,0,0,0.2);color:#202124;font-size:12px;' +
     'display:flex;align-items:center;gap:8px;' +
@@ -1138,8 +1174,10 @@ function tryInit() {
   // 全自動スカウトの振り分け(バッチ稼働中のみ動く。1ページ1回)
   routeBatch();
 
-  if (document.getElementById('scout-ext-panel')) return;
-  if (isScoutFormPresent()) initPanel();
+  if (!document.getElementById('scout-ext-panel') && isScoutFormPresent()) initPanel();
+
+  // 件数の丸はどの画面にも出す(いつでも手で直せるように)
+  renderCountChip();
 }
 
 // 初回チェック
@@ -1181,10 +1219,12 @@ const BATCH_MAX = 0;              // 0 = 1ページあたりの取得件数を�
 // 自動ページ送りの有効/無効。
 // このサイトの「次へ」は画面上の検索フォームを再送信する実装のため、
 // プロフィール画面を経由して一覧に戻るとフォームが空になり、
-// 「都道府県を選択してください」というアラートが出て処理が完全に止まる。
-// (アラートはブラウザの処理をブロックするため放置運用と両立しない)
-// 一覧のタブを保ったまま別タブで処理する方式に変えるまでは無効にする。
-const BATCH_AUTO_PAGING = false;
+// 「都道府県を選択してください」というアラートが出て処理が止まっていた。
+// 対策として、バッチ開始時の検索条件を覚えておき、ページ送りの直前に
+// フォームへ書き戻す(serializeSearchForm / restoreSearchForm)。
+// あわせて、クリックの間だけサイトのアラートを止め、進めなかった場合は
+// 原因を添えて終了する(放置運用でも固まらないようにするため)。
+const BATCH_AUTO_PAGING = true;
 
 // 新規候補ゼロのページが続いたら候補者が尽きたと判断する
 const BATCH_MAX_EMPTY_PAGES = 2;
@@ -1783,6 +1823,118 @@ function collectNamesOnPage() {
   return names;
 }
 
+// ── 検索フォームの保存/復元 ──
+// このサイトのページ送りは「検索フォームの再送信」で動く。
+// プロフィール画面を経由して一覧に戻るとフォームの中身が空になり、
+// 「都道府県を選択してください」等で先へ進めなくなるため、
+// バッチ開始時の検索条件を覚えておき、ページ送りの直前に書き戻す
+function findSearchForm() {
+  const forms = [...document.querySelectorAll('form')].filter(f => !f.closest('#scout-batch-panel'));
+  if (!forms.length) return null;
+  // ①「この条件で検索する」ボタンを持つフォーム(いちばん確実)
+  const byButton = forms.find(f =>
+    [...f.querySelectorAll('input[type="submit"], input[type="button"], button, a')].some(el => {
+      const t = (el.tagName === 'INPUT' ? el.value : el.textContent) || '';
+      return /この条件で検索|検索する/.test(t);
+    }));
+  if (byButton) return byButton;
+  // ② 検索条件の項目名を含むフォーム
+  const byField = forms.find(f => /希望雇用形態|希望業態|希望勤務地|現住所/.test(f.textContent || ''));
+  if (byField) return byField;
+  // ③ 最後の手段: 入力欄がいちばん多いフォーム
+  return forms.reduce((best, f) => {
+    const n = f.querySelectorAll('input, select, textarea').length;
+    return n > (best ? best.querySelectorAll('input, select, textarea').length : -1) ? f : best;
+  }, null);
+}
+
+// ページ番号を保持する隠しフィールド。書き戻すとページ送りが1ページ目に戻るため触らない
+const PAGING_FIELD_RE = /^(page|pageno|page_no|pagenum|pageindex|p|offset|start)$/i;
+
+// 検索条件ではなく候補者一覧の選択チェックボックス等は対象外にする
+function isCandidateRowField(el) {
+  const tr = el.closest('tr');
+  return !!(tr && tr.querySelector('a[href*="/member/detail/index/"]'));
+}
+
+function serializeSearchForm() {
+  const form = findSearchForm();
+  if (!form) return null;
+  const data = [];
+  form.querySelectorAll('input, select, textarea').forEach(el => {
+    if (!el.name || el.disabled) return;
+    if (el.type === 'submit' || el.type === 'button' || el.type === 'file' || el.type === 'password') return;
+    if (PAGING_FIELD_RE.test(el.name)) return;   // ページ番号は書き戻さない
+    if (isCandidateRowField(el)) return;         // 一覧の選択チェックは触らない
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      data.push({ name: el.name, value: el.value, checked: el.checked, type: el.type });
+    } else if (el.tagName === 'SELECT' && el.multiple) {
+      data.push({ name: el.name, values: [...el.selectedOptions].map(o => o.value), type: 'select-multiple' });
+    } else {
+      data.push({ name: el.name, value: el.value, type: el.type || el.tagName.toLowerCase() });
+    }
+  });
+  // 中身がほとんど無いフォームは「空の状態」なので覚えない
+  const filled = data.filter(d => d.checked || (d.value && d.value.length) || (d.values && d.values.length));
+  return filled.length ? data : null;
+}
+
+function restoreSearchForm(data) {
+  if (!data || !data.length) return false;
+  const form = findSearchForm();
+  if (!form) return false;
+  let restored = 0;
+  // 注意: ここでは change イベントを発火させない。
+  // 表示件数の選択などは変更時に自動で再検索する作りのことがあり、
+  // 書き戻した瞬間にページが飛んでしまうため。フォーム送信時に値は読まれる
+  data.forEach(d => {
+    const els = [...form.querySelectorAll(`[name="${CSS.escape(d.name)}"]`)]
+      .filter(el => !isCandidateRowField(el));
+    if (!els.length) return;
+    if (d.type === 'checkbox' || d.type === 'radio') {
+      const el = els.find(x => x.value === d.value) || els[0];
+      el.checked = d.checked;
+      restored++;
+    } else if (d.type === 'select-multiple') {
+      const el = els[0];
+      [...el.options].forEach(o => { o.selected = (d.values || []).includes(o.value); });
+      restored++;
+    } else {
+      els[0].value = d.value;
+      restored++;
+    }
+  });
+  return restored > 0;
+}
+
+// ページ送りのクリック中だけ、サイトのアラートを止める(処理が固まるのを防ぐ)
+function suppressSiteAlert(ms) {
+  window.postMessage({ type: 'scout_suppress_alert', ms: ms || 8000 }, '*');
+}
+function restoreSiteAlert() {
+  window.postMessage({ type: 'scout_restore_alert' }, '*');
+}
+
+// 現在のページ番号(ページ送りの見出しでリンクになっていない数字)
+function currentPageNumber() {
+  const nav = [...document.querySelectorAll('a')].find(a => (a.textContent || '').trim() === '次へ');
+  const box = nav ? nav.parentElement : null;
+  if (box) {
+    const active = [...box.children].find(c => c.tagName !== 'A' && /^\d+$/.test((c.textContent || '').trim()));
+    if (active) return parseInt(active.textContent.trim(), 10);
+  }
+  return null;
+}
+
+// ページ番号のリンク(「次へ」が効かない場合の代替)
+function findPageNumberLink(num) {
+  if (!num) return null;
+  return [...document.querySelectorAll('a')].find(a => {
+    if (a.closest('#scout-batch-panel')) return false;
+    return (a.textContent || '').trim() === String(num);
+  }) || null;
+}
+
 // ── 一覧の「次へ」リンクを探す ──
 // このサイトのページ送りはJavaScript式(href="javascript:..." や "#")なので、
 // hrefの内容では有効性を判断できない。無効化クラスの有無だけで判定する
@@ -1814,7 +1966,9 @@ async function startBatch(dryRun) {
     active: true, dryRun, queue, idx: 0, phase: 'profile', regen: 0, stopped: false,
     log: [], startedAt: Date.now(),
     listUrl: location.href, emptyPages: 0,
-    names: collectNamesOnPage()
+    names: collectNamesOnPage(),
+    // ページ送りのときに書き戻すための検索条件
+    searchForm: serializeSearchForm()
   });
   showBatchCounter(await getBatch());
   gotoCurrent();
@@ -1991,6 +2145,9 @@ async function batchRefillStepInner() {
     b.phase = 'profile';
     b.emptyPages = 0;
     b.listUrl = location.href;
+    // 検索条件が画面に残っていれば覚え直す(ページ送りのときに書き戻す)
+    const form = serializeSearchForm();
+    if (form) b.searchForm = form;
     await setBatch(b);
     showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
@@ -2013,17 +2170,33 @@ async function batchRefillStepInner() {
     return;
   }
   const next = findNextPageLink();
-  if (!next) {
+  const pageNo = currentPageNumber();
+  const numberLink = findPageNumberLink(pageNo ? pageNo + 1 : null);
+  if (!next && !numberLink) {
     await finishBatch(b, '最終ページまで処理したため終了しました');
     return;
   }
   await setBatch(b); // phaseは'refill'のまま
   showBatchToast(`このページは処理済みです。次のページへ進みます... (${b.emptyPages}/${BATCH_MAX_EMPTY_PAGES})`);
   setTimeout(() => {
-    // JavaScript式のページ送りにも対応するため、必ずクリックで遷移させる
+    // 検索条件を書き戻してからページ送りをクリックする。
+    // (プロフィール画面を経由するとフォームが空になり、
+    //  「都道府県を選択してください」で先へ進めなくなるため)
+    const ok = restoreSearchForm(b.searchForm);
+    if (!ok && b.searchForm) showBatchToast('検索条件を書き戻せませんでした。そのまま次へ進みます...');
+    // 条件が足りずアラートが出ても固まらないよう、クリックの間だけ止める
+    suppressSiteAlert(15000);
+
     const seqAtClick = refillSeq;
     const before = pageSignature();
-    next.click();
+    // JavaScript式のページ送りにも対応するため、必ずクリックで遷移させる
+    (next || numberLink).click();
+    // 「次へ」で動かなかった場合に備え、少し待ってページ番号のリンクも試す
+    if (next && numberLink) {
+      setTimeout(() => {
+        if (pageSignature() === before && refillSeq === seqAtClick) numberLink.click();
+      }, 4000);
+    }
     // AJAXで表が差し替わる場合はページが再読み込みされず、
     // content scriptも再実行されないため、自分で再チェックする
     // (ページ遷移が起きた場合はこのタイマーごと破棄される)
@@ -2031,6 +2204,13 @@ async function batchRefillStepInner() {
     waitForListChange(before, seqAtClick, 0);
   }, 2000);
 }
+
+// ページ送りが失敗した(サイトのアラートで止められた)ことを覚えておく
+let lastSuppressedAlert = '';
+window.addEventListener('message', (e) => {
+  if (e.source !== window || e.data?.type !== 'scout_alert_suppressed') return;
+  lastSuppressedAlert = String(e.data.message || '').slice(0, 100);
+});
 
 // 一覧に並んでいる候補者IDの並び。ページが切り替わったかの判定に使う
 function pageSignature() {
@@ -2046,9 +2226,24 @@ function pageSignature() {
 // AJAXの読み込みが遅い場合に、古いページを見て「処理済み」と誤判定し
 // ページを飛ばしてしまうのを防ぐ(最大約12秒待って、その後は続行)
 function waitForListChange(before, seqAtClick, attempt) {
-  setTimeout(() => {
+  setTimeout(async () => {
     if (refillSeq !== seqAtClick) return; // 他経路で既に補充が走った
-    if (pageSignature() !== before || attempt >= 3) { batchRefillStep(); return; }
+    if (pageSignature() !== before) { lastSuppressedAlert = ''; batchRefillStep(); return; }
+    if (attempt >= 3) {
+      // サイト側のアラートで止められた場合は、原因を添えて終了する
+      // (同じ操作を繰り返しても進めないため)
+      if (lastSuppressedAlert) {
+        const b = await getBatch();
+        if (b && b.active) {
+          await finishBatch(b,
+            `次のページへ進めませんでした（画面の案内: ${lastSuppressedAlert}）。` +
+            `検索条件を入れ直して検索し直してから、もう一度「動」を押してください。`);
+          return;
+        }
+      }
+      batchRefillStep();
+      return;
+    }
     waitForListChange(before, seqAtClick, attempt + 1);
   }, 3000);
 }
