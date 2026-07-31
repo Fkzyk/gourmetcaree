@@ -23,6 +23,8 @@ window.addEventListener('message', (e) => {
     }
     clearTimeout(scoutAlertTimer);
     scoutAlertTimer = setTimeout(() => { if (scoutAlertRestore) scoutAlertRestore(); }, ms);
+    // 有効になったことを伝える(これを待ってからクリックさせる)
+    window.postMessage({ type: 'scout_alert_suppress_ready' }, '*');
     return;
   }
 

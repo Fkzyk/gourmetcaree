@@ -1823,11 +1823,13 @@ function collectNamesOnPage() {
   return names;
 }
 
-// ── 検索フォームの保存/復元 ──
+// ── 検索フォームの保存と再送信 ──
 // このサイトのページ送りは「検索フォームの再送信」で動く。
-// プロフィール画面を経由して一覧に戻るとフォームの中身が空になり、
-// 「都道府県を選択してください」等で先へ進めなくなるため、
-// バッチ開始時の検索条件を覚えておき、ページ送りの直前に書き戻す
+// プロフィール画面を経由して一覧に戻るとフォームの中身が空になるうえ、
+// 都道府県のように「選択」ダイアログで作られる項目は、まっさらな画面では
+// 入力欄そのものが存在しないため、値を書き戻すこともできない。
+// そこで、バッチ開始時の検索条件をまるごと覚えておき、一覧に戻るときは
+// 自前のフォームで同じ内容を送信し直す(サイトの入力チェックを経由しない)。
 function findSearchForm() {
   const forms = [...document.querySelectorAll('form')].filter(f => !f.closest('#scout-batch-panel'));
   if (!forms.length) return null;
@@ -1857,15 +1859,23 @@ function isCandidateRowField(el) {
   return !!(tr && tr.querySelector('a[href*="/member/detail/index/"]'));
 }
 
+// ページ番号の項目名(この値を書き換えて目的のページを取り出す)
+const PAGE_NUMBER_FIELD_RE = /^(page|pageno|page_no|pagenum|pageindex|nowpage|currentpage)$/i;
+
 function serializeSearchForm() {
   const form = findSearchForm();
   if (!form) return null;
   const data = [];
+  const pageNames = [];
   form.querySelectorAll('input, select, textarea').forEach(el => {
     if (!el.name || el.disabled) return;
     if (el.type === 'submit' || el.type === 'button' || el.type === 'file' || el.type === 'password') return;
-    if (PAGING_FIELD_RE.test(el.name)) return;   // ページ番号は書き戻さない
     if (isCandidateRowField(el)) return;         // 一覧の選択チェックは触らない
+    if (PAGE_NUMBER_FIELD_RE.test(el.name)) {    // ページ番号は覚えるが値は使わない
+      if (!pageNames.includes(el.name)) pageNames.push(el.name);
+      return;
+    }
+    if (PAGING_FIELD_RE.test(el.name)) return;   // offset等も送信時に指定し直す
     if (el.type === 'checkbox' || el.type === 'radio') {
       data.push({ name: el.name, value: el.value, checked: el.checked, type: el.type });
     } else if (el.tagName === 'SELECT' && el.multiple) {
@@ -1876,7 +1886,52 @@ function serializeSearchForm() {
   });
   // 中身がほとんど無いフォームは「空の状態」なので覚えない
   const filled = data.filter(d => d.checked || (d.value && d.value.length) || (d.values && d.values.length));
-  return filled.length ? data : null;
+  if (!filled.length) return null;
+  return {
+    action: form.getAttribute('action') || location.pathname,
+    method: (form.getAttribute('method') || 'post').toLowerCase(),
+    fields: data,
+    pageNames
+  };
+}
+
+// 覚えた検索条件を、自前のフォームで送信し直して一覧を開く。
+// サイトの「次へ」と違って画面の入力チェックを通らないため、
+// プロフィール画面を経由してフォームが空になっていても確実に開ける
+function submitSavedSearch(saved, pageNo) {
+  if (!saved || !saved.fields || !saved.fields.length) return false;
+  const f = document.createElement('form');
+  f.method = saved.method === 'get' ? 'get' : 'post';
+  f.action = saved.action || location.pathname;
+  f.style.display = 'none';
+  const add = (name, value) => {
+    const i = document.createElement('input');
+    i.type = 'hidden';
+    i.name = name;
+    i.value = value == null ? '' : String(value);
+    f.appendChild(i);
+  };
+  saved.fields.forEach(d => {
+    if (d.type === 'checkbox' || d.type === 'radio') {
+      if (d.checked) add(d.name, d.value);       // 未チェックは送らない(ブラウザと同じ挙動)
+    } else if (d.type === 'select-multiple') {
+      (d.values || []).forEach(v => add(d.name, v));
+    } else {
+      add(d.name, d.value);
+    }
+  });
+  if (pageNo && saved.pageNames && saved.pageNames.length) {
+    saved.pageNames.forEach(n => add(n, pageNo));
+  }
+  document.body.appendChild(f);
+  f.submit();
+  return true;
+}
+
+// 一覧へ戻る(覚えた条件で送信し直す。無理なら元のURLへ)
+function gotoListPage(b, pageNo) {
+  if (b && b.searchForm && submitSavedSearch(b.searchForm, pageNo)) return;
+  location.href = (b && b.listUrl) || '/shop-pc/member/list';
 }
 
 function restoreSearchForm(data) {
@@ -1907,9 +1962,27 @@ function restoreSearchForm(data) {
   return restored > 0;
 }
 
-// ページ送りのクリック中だけ、サイトのアラートを止める(処理が固まるのを防ぐ)
+// ページ送りのクリック中だけ、サイトのアラートを止める(処理が固まるのを防ぐ)。
+// 指示はページ側へ非同期で伝わるため、有効になった合図を待ってから次に進む
 function suppressSiteAlert(ms) {
-  window.postMessage({ type: 'scout_suppress_alert', ms: ms || 8000 }, '*');
+  return new Promise((resolve) => {
+    let done = false;
+    const handler = (e) => {
+      if (e.source !== window || e.data?.type !== 'scout_alert_suppress_ready') return;
+      if (done) return;
+      done = true;
+      window.removeEventListener('message', handler);
+      resolve(true);
+    };
+    window.addEventListener('message', handler);
+    window.postMessage({ type: 'scout_suppress_alert', ms: ms || 8000 }, '*');
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('message', handler);
+      resolve(false);
+    }, 1500);
+  });
 }
 function restoreSiteAlert() {
   window.postMessage({ type: 'scout_restore_alert' }, '*');
@@ -1967,8 +2040,9 @@ async function startBatch(dryRun) {
     log: [], startedAt: Date.now(),
     listUrl: location.href, emptyPages: 0,
     names: collectNamesOnPage(),
-    // ページ送りのときに書き戻すための検索条件
-    searchForm: serializeSearchForm()
+    // 一覧に戻るときに送信し直すための検索条件と、いま見ているページ番号
+    searchForm: serializeSearchForm(),
+    pageNo: currentPageNumber() || 1
   });
   showBatchCounter(await getBatch());
   gotoCurrent();
@@ -2090,8 +2164,8 @@ async function recordAndNext(result, reason, mail) {
     b.phase = 'refill';
     await setBatch(b);
     showBatchToast(`${b.log.length}件 完了。一覧に戻って次を探します...`);
-    const url = b.listUrl || '/shop-pc/member/list';
-    setTimeout(() => { location.href = url; }, wait);
+    // 覚えた検索条件で一覧を開き直す(現在のページのまま)
+    setTimeout(() => gotoListPage(b, b.pageNo || null), wait);
     return;
   }
 
@@ -2145,9 +2219,10 @@ async function batchRefillStepInner() {
     b.phase = 'profile';
     b.emptyPages = 0;
     b.listUrl = location.href;
-    // 検索条件が画面に残っていれば覚え直す(ページ送りのときに書き戻す)
+    // 検索条件が画面に残っていれば覚え直す(一覧に戻るときに送信し直すため)
     const form = serializeSearchForm();
     if (form) b.searchForm = form;
+    b.pageNo = currentPageNumber() || b.pageNo || 1;
     await setBatch(b);
     showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
@@ -2169,23 +2244,35 @@ async function batchRefillStepInner() {
     await finishBatch(b, '対象の候補者がいなくなったため終了しました');
     return;
   }
+  const shownPage = currentPageNumber();
+  const nowPage = b.pageNo || shownPage || 1;
+  const nextPage = nowPage + 1;
+
+  // ① 覚えた条件でページ番号を指定して送信し直す(最優先。入力チェックを通らない)
+  if (b.searchForm && b.searchForm.pageNames && b.searchForm.pageNames.length) {
+    b.pageNo = nextPage;
+    await setBatch(b); // phaseは'refill'のまま
+    showBatchToast(`このページは処理済みです。${nextPage}ページ目へ進みます...`);
+    setTimeout(() => { gotoListPage(b, nextPage); }, 2000);
+    return;
+  }
+
+  // ② ページ番号の項目が分からない場合は、画面のページ送りをクリックする
   const next = findNextPageLink();
-  const pageNo = currentPageNumber();
-  const numberLink = findPageNumberLink(pageNo ? pageNo + 1 : null);
+  const numberLink = findPageNumberLink(shownPage ? shownPage + 1 : null);
   if (!next && !numberLink) {
     await finishBatch(b, '最終ページまで処理したため終了しました');
     return;
   }
-  await setBatch(b); // phaseは'refill'のまま
+  b.pageNo = nextPage;
+  await setBatch(b);
   showBatchToast(`このページは処理済みです。次のページへ進みます... (${b.emptyPages}/${BATCH_MAX_EMPTY_PAGES})`);
-  setTimeout(() => {
-    // 検索条件を書き戻してからページ送りをクリックする。
-    // (プロフィール画面を経由するとフォームが空になり、
-    //  「都道府県を選択してください」で先へ進めなくなるため)
-    const ok = restoreSearchForm(b.searchForm);
-    if (!ok && b.searchForm) showBatchToast('検索条件を書き戻せませんでした。そのまま次へ進みます...');
-    // 条件が足りずアラートが出ても固まらないよう、クリックの間だけ止める
-    suppressSiteAlert(15000);
+  setTimeout(async () => {
+    // 条件が足りずアラートが出ても固まらないよう、クリックの前に止めておく
+    // (指示は非同期で伝わるため、有効になるのを待ってからクリックする)
+    await suppressSiteAlert(15000);
+    // 画面に入力欄が残っていれば条件を書き戻す(あれば成功率が上がる)
+    restoreSearchForm(b.searchForm && b.searchForm.fields);
 
     const seqAtClick = refillSeq;
     const before = pageSignature();
@@ -2275,9 +2362,8 @@ async function routeBatch() {
     if (isListPage()) {
       setTimeout(batchRefillStep, 1500);
     } else {
-      // listUrlが無い場合(旧バージョンの残存状態など)は検索一覧トップへ戻す
-      const url = b.listUrl || '/shop-pc/member/list';
-      setTimeout(() => { location.href = url; }, 1500);
+      // 一覧以外にいる場合は、覚えた検索条件で一覧を開き直す
+      setTimeout(() => gotoListPage(b, b.pageNo || null), 1500);
     }
     return;
   }
@@ -2322,8 +2408,7 @@ async function resumeBatch() {
   showBatchCounter(b);
   showBatchToast(`${b.log.length}件まで完了。続きから再開します...`);
   if (b.phase === 'refill') {
-    const url = b.listUrl || '/shop-pc/member/list';
-    setTimeout(() => { location.href = url; }, 1500);
+    setTimeout(() => gotoListPage(b, b.pageNo || null), 1500);
   } else {
     setTimeout(gotoCurrent, 1500);
   }
