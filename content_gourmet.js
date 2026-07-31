@@ -1156,11 +1156,19 @@ const NAME_FIELD_LABELS = ['氏名', 'お名前', '会員名', '求職者名', '
 // 読み欄・ローマ字欄を表す語(この語を含むラベルは氏名欄として扱わない)
 const NAME_READING_RE = /カナ|かな|ふりがな|フリガナ|ヨミ|読み|ローマ字/;
 
-// 氏名の値と間違えやすい語(ラベル行と値行が分かれている表の読み飛ばし用)
+// 氏名の値と間違えやすい語(これらは氏名の値として採用しない)
 const NAME_VALUE_SKIP = [
   '氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前',
   'ふりがな', 'フリガナ', 'カナ', 'セイ', 'メイ', '姓', '名',
   '性別', '年齢', '住所', '必須', '任意', '未登録', '非公開', '未入力'
+];
+
+// 氏名の見出しが並ぶ表(氏名／ふりがな→値／値)で読み飛ばしてよい行。
+// 「性別」「住所」など**別項目**の見出しはここに入れない
+// (氏名欄が空のとき、その先の別項目の値を氏名と取り違えるため)
+const NAME_HEADER_SKIP = [
+  '氏名', 'お名前', '会員名', '求職者名', '応募者名', '名前',
+  'ふりがな', 'フリガナ', 'カナ', 'セイ', 'メイ', '姓', '名', '必須', '任意'
 ];
 
 // 生成メール本文に含まれていたら不合格にする語
@@ -1206,12 +1214,24 @@ function extractNameFromText(text) {
     // ラベルの後に長い文章が続く行(説明文など)は項目名ではない
     const rest = line.slice(label.length).replace(/^[ \t　]*[:：]?[ \t　]*/, '').trim();
     if (rest.length > 30) continue;
-    // 同じ行に値がある表記と、次行以降に値がある表記の両方に対応する
-    const candidates = [rest, lines[i + 1], lines[i + 2], lines[i + 3]];
-    for (const c of candidates) {
-      const v = cleanNameValue(c);
-      if (v) return v;
+
+    // 値の場所: 同じ行 → 無ければ次の行。
+    // 「氏名/ふりがな」のように見出しだけが続く表もあるため、
+    // 氏名まわりの見出し行だけは読み飛ばす。
+    // それ以外の行に当たったら、そこで打ち切る
+    // (氏名欄が空のときに、別項目の値を氏名と取り違えないため)
+    let value = rest;
+    for (let j = i + 1; !value && j <= i + 3 && j < lines.length; j++) {
+      const c = lines[j];
+      if (!c) continue;
+      const flat = c.replace(/[\s　]/g, '');
+      if (NAME_HEADER_SKIP.includes(flat) || NAME_READING_RE.test(c)) continue;
+      value = c;
     }
+    if (!value || isProfileLabel(value)) continue; // 氏名欄が空
+
+    const v = cleanNameValue(value);
+    if (v) return v;
   }
   return null;
 }
@@ -1258,6 +1278,32 @@ const DETAIL_FIELD_LABELS = [
   '学校名', '卒業区分', '会社名', '勤務期間', '仕事内容', '業態'
 ];
 
+// プロフィール画面の表から「項目名 → 値」を直接読む。
+// テキストの行だけで判断すると、空欄のときに次の項目の値を拾ってしまうため、
+// 表の構造が読めるときはこちらを優先する
+function readProfileFieldsFromDom() {
+  const fields = {};
+  const put = (k, v) => {
+    const key = (k || '').replace(/[\s　]+/g, '');
+    if (!key || key.length > 20) return;
+    if (fields[key] === undefined) fields[key] = (v || '').replace(/[\s　]+/g, ' ').trim();
+  };
+  document.querySelectorAll('tr').forEach(tr => {
+    const cells = [...tr.children].filter(c => c.tagName === 'TH' || c.tagName === 'TD');
+    if (cells.length !== 2) return; // 「項目名 | 値」の2列だけを対象にする
+    put(cells[0].textContent, cells[1].textContent);
+  });
+  document.querySelectorAll('dl').forEach(dl => {
+    const kids = [...dl.children];
+    for (let i = 0; i < kids.length - 1; i++) {
+      if (kids[i].tagName === 'DT' && kids[i + 1].tagName === 'DD') {
+        put(kids[i].textContent, kids[i + 1].textContent);
+      }
+    }
+  });
+  return fields;
+}
+
 function isProfileLabel(s) {
   const v = (s || '').replace(/[\s　]/g, '');
   if (!v) return true;
@@ -1280,13 +1326,20 @@ function profileFieldValue(lines, label) {
 // 基本情報しか登録されていないプロフィールか
 // (経験値・希望条件・学歴・職務経歴がすべて空。あとから記入される可能性があるため
 //  NG登録はせず、今回だけ見送る)
-function isSparseProfile(text) {
+// fields: 画面の表から読んだ「項目名→値」(あればこちらを優先)
+function isSparseProfile(text, fields) {
+  // ① 画面の表から見て、どれかに記入があれば「詳細あり」
+  const domKnown = !!fields && DETAIL_FIELD_LABELS.some(l => fields[l] !== undefined);
+  if (domKnown && DETAIL_FIELD_LABELS.some(l => (fields[l] || '').length > 0)) return false;
+
+  // ② テキストから見て、どれかに記入があれば「詳細あり」
+  // (職務経歴など、表として読めない部分を取りこぼさないため、両方で確認する)
   const lines = (text || '').split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  // 想定した項目名が1つも無いページ(画面構成の変更など)は判定しない
-  if (!DETAIL_FIELD_LABELS.some(l => lines.some(x => x.startsWith(l)))) return false;
-  for (const label of DETAIL_FIELD_LABELS) {
-    if (profileFieldValue(lines, label)) return false;
-  }
+  const textKnown = DETAIL_FIELD_LABELS.some(l => lines.some(x => x.startsWith(l)));
+  if (DETAIL_FIELD_LABELS.some(l => profileFieldValue(lines, l))) return false;
+
+  // 想定した項目名がどちらの方法でも見つからないページ(画面構成の変更など)は判定しない
+  if (!domKnown && !textKnown) return false;
   return true;
 }
 
@@ -1294,6 +1347,7 @@ function isSparseProfile(text) {
 // extraWords: 画面から追加したNGワード(1語1エントリ)
 // opts.nameNg: 氏名(ローマ字のみ/カタカナのみ)判定を使うか
 // opts.fallbackName: プロフィールに氏名欄が無い場合に使う、一覧から拾った氏名
+// opts.fields: プロフィール画面の表から読んだ「項目名→値」
 function ngCheck(profileText, extraWords, opts) {
   const text = profileText || '';
   const o = opts || {};
@@ -1312,13 +1366,19 @@ function ngCheck(profileText, extraWords, opts) {
   // 氏名がすべてローマ字・すべてカタカナなら対象外。
   // 氏名欄が読み取れない場合は判定せず通す(安易にスキップしない)
   if (o.nameNg !== false) {
-    const nameNg = foreignNameNg(extractNameFromText(text) || o.fallbackName);
+    // 画面の表から読めた氏名 → 本文から読めた氏名 → 一覧から拾った氏名 の順
+    let name = null;
+    if (o.fields) {
+      const key = NAME_FIELD_LABELS.find(l => o.fields[l] !== undefined && !NAME_READING_RE.test(l));
+      if (key) name = o.fields[key] || null;
+    }
+    const nameNg = foreignNameNg(name || extractNameFromText(text) || o.fallbackName);
     if (nameNg) return nameNg;
   }
 
   // 基本情報しか登録されていない方は今回は見送る。
   // (NGではない。あとから経歴を登録される可能性があるので、次回また対象に含める)
-  if (isSparseProfile(text)) return '情報不足(基本情報のみ・詳細が未登録)';
+  if (isSparseProfile(text, o.fields)) return '情報不足(基本情報のみ・詳細が未登録)';
 
   // 飲食店経験年数が「未経験」なら対象外。
   // 自己PR欄の「未経験から〜」等を誤検知しないよう、項目の値だけを見る
@@ -1329,12 +1389,24 @@ function ngCheck(profileText, extraWords, opts) {
   const t = zenToHan(text);
   // 年齢の読み取り。表記ゆれが多いので候補を集め、15〜99歳に収まるものを使う
   // (「生年月日 / 年齢 → 1997/07/10 29才」のように、生年月日と同じ欄の場合がある)
+  // 自己PRの「20歳から飲食業界で」等を年齢と誤読しないよう、
+  // 「年齢」「生年月日」の欄に紐づく数値を先に見る
   const ageCands = [];
-  let m = t.match(/([0-9]{1,3})[ \t　]*[歳才]/);            // 「29才」「38歳」
+  let m;
+  if (o.fields) {
+    for (const k of ['年齢', '生年月日/年齢', '生年月日・年齢', '生年月日']) {
+      const v = zenToHan(o.fields[k] || '');
+      const mm = v.match(/([0-9]{1,3})[ \t]*[歳才]/) || v.match(/^[ \t]*([0-9]{1,3})[ \t]*$/);
+      if (mm) { ageCands.push(parseInt(mm[1], 10)); break; }
+    }
+  }
+  m = t.match(/(?:年齢|生年月日)[\s\S]{0,30}?([0-9]{1,3})[ \t　]*[歳才]/); // 「年齢 → 29才」
   if (m) ageCands.push(parseInt(m[1], 10));
   m = t.match(/年齢[^0-9]{0,10}([0-9]{1,3})(?![0-9])/);     // 「年齢 29」(西暦は除外)
   if (m) ageCands.push(parseInt(m[1], 10));
   m = t.match(/^[0-9]{4,}[ \t　]*[（(]([0-9]{1,3})[）)]/m);  // 見出しの「101906 （29）」
+  if (m) ageCands.push(parseInt(m[1], 10));
+  m = t.match(/([0-9]{1,3})[ \t　]*[歳才]/);                // 最後の手段: 本文中の「38歳」
   if (m) ageCands.push(parseInt(m[1], 10));
   let age = ageCands.find(a => a >= 15 && a <= 99);
   if (age === undefined) age = null;
@@ -1627,6 +1699,8 @@ function collectNamesOnPage() {
       if (!link) return;
       const m = (link.getAttribute('href') || '').match(/\/member\/detail\/index\/(\d+)/);
       if (!m) return;
+      // 列数が見出し行と違う行は、列の位置がずれて別の値を拾うため使わない
+      if (tr.children.length !== heads.length) return;
       const cell = tr.children[col];
       if (!cell) return;
       const v = cleanNameValue(cell.textContent || '');
@@ -1996,10 +2070,11 @@ async function batchProfileStep(target) {
   }
   if (!text || text.length < 200) { await recordAndNext('skip', 'プロフィール取得失敗'); return; }
 
-  // 氏名は プロフィール画面 → (無ければ)一覧で拾った氏名 の順に見る
+  // 氏名は 画面の表 → プロフィール本文 → 一覧で拾った氏名 の順に見る
   const bNames = await getBatch();
   const ng = ngCheck(text, await getCustomNgWords(), {
     nameNg: await getForeignNameNg(),
+    fields: readProfileFieldsFromDom(),
     fallbackName: (bNames && bNames.names) ? bNames.names[target] : null
   });
   if (ng) {
