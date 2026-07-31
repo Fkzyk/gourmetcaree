@@ -1346,7 +1346,10 @@ function readProfileFieldsFromDom() {
   const put = (k, v) => {
     const key = (k || '').replace(/[\s　]+/g, '');
     if (!key || key.length > 20) return;
-    if (fields[key] === undefined) fields[key] = (v || '').replace(/[\s　]+/g, ' ').trim();
+    // 同じ項目名が複数ある場合(職務経歴1〜n)は、最初に見つかった「記入のある値」を採用する
+    if (fields[key] === undefined || isEmptyFieldValue(fields[key])) {
+      fields[key] = (v || '').replace(/[\s　]+/g, ' ').trim();
+    }
   };
   document.querySelectorAll('tr').forEach(tr => {
     const cells = [...tr.children].filter(c => c.tagName === 'TH' || c.tagName === 'TD');
@@ -1364,6 +1367,11 @@ function readProfileFieldsFromDom() {
   return fields;
 }
 
+// 未記入を表す値か(グルメキャリーは空欄を「--」で表示することがある)
+function isEmptyFieldValue(v) {
+  return !String(v || '').replace(/[-‐‑–—ー―−ｰ－\s　.。、,]/g, '').trim();
+}
+
 function isProfileLabel(s) {
   const v = (s || '').replace(/[\s　]/g, '');
   if (!v) return true;
@@ -1375,10 +1383,14 @@ function isProfileLabel(s) {
 function profileFieldValue(lines, label) {
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].startsWith(label)) continue;
+    // 空欄だった場合は、同じ項目名の次の出現(職務経歴2以降など)も見る
     const rest = lines[i].slice(label.length).replace(/^[ \t　]*[:：/／]?[ \t　]*/, '').trim();
-    if (rest && !isProfileLabel(rest)) return rest;
+    if (rest && !isProfileLabel(rest)) {
+      if (!isEmptyFieldValue(rest)) return rest;
+      continue;
+    }
     const next = (lines[i + 1] || '').trim();
-    if (next && !isProfileLabel(next)) return next;
+    if (next && !isProfileLabel(next) && !isEmptyFieldValue(next)) return next;
   }
   return '';
 }
@@ -1390,7 +1402,7 @@ function profileFieldValue(lines, label) {
 function isSparseProfile(text, fields) {
   // ① 画面の表から見て、どれかに記入があれば「詳細あり」
   const domKnown = !!fields && DETAIL_FIELD_LABELS.some(l => fields[l] !== undefined);
-  if (domKnown && DETAIL_FIELD_LABELS.some(l => (fields[l] || '').length > 0)) return false;
+  if (domKnown && DETAIL_FIELD_LABELS.some(l => !isEmptyFieldValue(fields[l]))) return false;
 
   // ② テキストから見て、どれかに記入があれば「詳細あり」
   // (職務経歴など、表として読めない部分を取りこぼさないため、両方で確認する)
@@ -1683,7 +1695,8 @@ async function showNgWordEditor() {
     `<span style="font-size:12px;line-height:1.6;">お名前が<b>すべてローマ字</b>または` +
     `<b>すべてカタカナ</b>の方を対象外にする<br>` +
     `<span style="font-size:11px;color:#5f6368;">` +
-    `漢字・ひらがなが混ざっている方は対象に残ります。氏名の欄が読み取れない場合は対象に残します。` +
+    `氏名の欄がある画面でだけ働きます。<b>グルメキャリーのプロフィールには氏名欄が無いため、` +
+    `現状この判定は行われません</b>（氏名が表示されるようになった場合に効きます）。` +
     `</span></span></label></div>` +
     `<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
     `<div style="font-size:12px;font-weight:bold;margin-bottom:4px;">NG記録のリセット</div>` +
