@@ -3,6 +3,7 @@
 // テキスト挿入は content_gemini_main.js (MAIN world) に postMessage で委譲
 
 let isProcessing = false;
+let runToken = 0; // 依頼ごとの通し番号(古い処理を打ち切るために使う)
 
 // ── テキスト挿入（MAIN world 経由）────────────────────────
 function insertPrompt(text) {
@@ -20,14 +21,124 @@ function insertPrompt(text) {
 }
 
 // ── 送信ボタン取得（Chrome実機検証済み）──────────────────
+// 表記ゆれ(「プロンプトを送信」「送信」「Send message」)に対応しつつ、
+// マイク・停止・その他のボタンを誤って押さないよう除外する
+const SEND_LABEL_RE = /送信|send/i;
+const NOT_SEND_LABEL_RE = /停止|中止|stop|マイク|音声|voice|mic|アップロード|upload|添付|attach|画像|image|canvas|deep\s*research|フィードバック|feedback|共有|share|報告|report/i;
+
+function isSendCandidate(btn) {
+  const label = btn.getAttribute('aria-label') || btn.getAttribute('mattooltip') ||
+                btn.getAttribute('title') || btn.getAttribute('data-test-id') || '';
+  if (!label) return false;
+  if (NOT_SEND_LABEL_RE.test(label)) return false;
+  return SEND_LABEL_RE.test(label) || /send-button/i.test(label);
+}
+
 function getSendButton() {
-  return (
+  const exact =
     document.querySelector('button[aria-label="プロンプトを送信"]') ||
     document.querySelector('button[aria-label="Send message"]') ||
-    document.querySelector('button.send') ||
-    [...(document.querySelector('rich-textarea')?.querySelectorAll('button') ?? [])].at(-1) ||
-    null
-  );
+    document.querySelector('button[aria-label="送信"]');
+  if (exact) return exact;
+
+  // まず入力欄まわりだけを探す(フィードバック送信などの別ボタンを押さないため)
+  const editor = getInputArea();
+  const composer = editor
+    ? editor.closest('form, input-container, [class*="input-area"], [class*="composer"], [class*="input-container"]')
+    : null;
+  if (composer) {
+    const near = [...composer.querySelectorAll('button')].filter(isSendCandidate);
+    if (near.length) return near.find(b => !isSendDisabled(b)) || near[0];
+  }
+
+  const byLabel = [...document.querySelectorAll('button')].filter(isSendCandidate);
+  // 押せる状態のものを優先する
+  return byLabel.find(b => !isSendDisabled(b)) || byLabel[0] ||
+         document.querySelector('button.send-button, button.send') || null;
+}
+
+function isSendDisabled(btn) {
+  if (!btn) return true;
+  return !!(btn.disabled || btn.getAttribute('aria-disabled') === 'true' ||
+            btn.classList.contains('disabled'));
+}
+
+// 押せる状態の送信ボタンが現れるまで待つ
+// (文字を入れた直後は無効のままのことがあり、すぐ押しても何も起きない)
+async function waitForSendButton(timeoutMs) {
+  const until = Date.now() + (timeoutMs || 8000);
+  let last = null;
+  while (Date.now() < until) {
+    const btn = getSendButton();
+    if (btn) {
+      last = btn;
+      if (!isSendDisabled(btn)) return btn;
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return last;
+}
+
+// 入力欄にまだ本文が残っているか(送信されると空になる)
+function inputHasText() {
+  const el = getInputArea();
+  return !!(el && (el.innerText || '').trim().length > 5);
+}
+
+// 送信済みの回答ブロック数(増えたら送信された合図)
+function answerCount() {
+  return document.querySelectorAll('message-content').length;
+}
+
+// Enterキーで送信する(ボタンが押せないときの代替手段)
+function pressEnterToSend() {
+  const el = getInputArea();
+  if (!el) return false;
+  el.focus();
+  const init = {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    bubbles: true, cancelable: true, composed: true
+  };
+  el.dispatchEvent(new KeyboardEvent('keydown', init));
+  el.dispatchEvent(new KeyboardEvent('keypress', init));
+  el.dispatchEvent(new KeyboardEvent('keyup', init));
+  return true;
+}
+
+// 送信されたかを確かめる(生成が始まった / 入力欄が空になった / 回答が増えた)
+async function waitForSubmitted(baseAnswers, timeoutMs) {
+  const until = Date.now() + (timeoutMs || 6000);
+  while (Date.now() < until) {
+    if (isGenerating()) return true;
+    if (answerCount() > baseAnswers) return true;
+    if (!inputHasText()) return true;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  return false;
+}
+
+// 送信を確実に行う。押しただけで終わらせず、送信されたことを確認する
+// (押せない状態でクリックしても何も起きず、プロンプトが入力欄に残ったまま
+//  応答待ちで固まる不具合があったため)
+async function submitPrompt(progress) {
+  const baseAnswers = answerCount();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const btn = await waitForSendButton(attempt === 1 ? 8000 : 3000);
+    if (btn && !isSendDisabled(btn)) {
+      btn.click();
+    } else {
+      pressEnterToSend();
+    }
+    if (await waitForSubmitted(baseAnswers, 6000)) return true;
+
+    // 押せたはずなのに始まらない場合はEnterでも試す
+    pressEnterToSend();
+    if (await waitForSubmitted(baseAnswers, 4000)) return true;
+
+    if (progress) progress(`⌨️ 送信を再試行しています... (${attempt}/3)`);
+    await new Promise(r => setTimeout(r, 1200));
+  }
+  return false;
 }
 
 // ── 入力エリア取得 ─────────────────────────────────────────
@@ -54,7 +165,7 @@ function isGenerating() {
 // 完了条件: テキストが3秒間変化しない かつ 生成中インジケータが消えている
 // (旧実装は2秒静止で完了扱いにしていたため、生成途中の一時停止で
 //  途中までの文章を取り込む事故があった)
-function waitForResponse() {
+function waitForResponse(token) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error('タイムアウト: Geminiの応答が180秒以内に完了しませんでした')),
@@ -65,6 +176,13 @@ function waitForResponse() {
     let stableCount = 0;
 
     const interval = setInterval(() => {
+      // 新しい依頼が来ていたら、この待機は用済みなので抜ける
+      if (token !== undefined && token !== runToken) {
+        clearInterval(interval);
+        clearTimeout(timer);
+        reject(new Error('__superseded__'));
+        return;
+      }
       const el = [...document.querySelectorAll('message-content')].at(-1);
       const currentText = (el?.innerText ?? '').trim();
 
@@ -186,10 +304,12 @@ function safeSendMessage(message) {
 
 // ── メイン処理 ────────────────────────────────────────────
 async function processPrompt(promptText) {
-  if (isProcessing) return;
+  // 新しい依頼が来たら、前の依頼の待機は打ち切って新しい方を処理する。
+  // (前の待機が残っていると、次の依頼が丸ごと無視されて何も起きなくなる)
+  const myToken = ++runToken;
   isProcessing = true;
 
-  const progress = text => safeSendMessage({ action: 'geminiProgress', text });
+  const progress = text => { if (myToken === runToken) safeSendMessage({ action: 'geminiProgress', text }); };
 
   try {
     progress('⏳ Geminiの入力エリアを探しています...');
@@ -204,23 +324,33 @@ async function processPrompt(promptText) {
 
     progress('⌨️ プロンプトを入力しています...');
 
-    await insertPrompt(promptText);
-    await new Promise(r => setTimeout(r, 400));
+    const inserted = await insertPrompt(promptText);
+    if (!inserted) {
+      // 入力欄に文字が入っていれば続行する(合図が届かなかっただけの場合がある)
+      await new Promise(r => setTimeout(r, 800));
+      if (!inputHasText()) throw new Error('プロンプトを入力できませんでした。');
+    }
+    await new Promise(r => setTimeout(r, 600));
 
-    const sendBtn = getSendButton();
-    if (!sendBtn) throw new Error('送信ボタンが見つかりません。');
-    sendBtn.click();
+    progress('📨 Geminiへ送信しています...');
+    const sent = await submitPrompt(progress);
+    if (!sent) {
+      throw new Error('送信できませんでした（送信ボタンが反応しません）。Geminiの画面を確認してください。');
+    }
 
     progress('✍️ Geminiが回答を生成中...');
 
-    const responseText = await waitForResponse();
+    const responseText = await waitForResponse(myToken);
+    if (myToken !== runToken) return; // 新しい依頼に置き換わった
     const { subject, body } = parseScoutMessage(responseText);
     safeSendMessage({ action: 'geminiResponse', subject, body, rawText: responseText });
 
   } catch (error) {
+    // 新しい依頼に置き換わった場合は、古い方のエラーを送らない
+    if (error.message === '__superseded__' || myToken !== runToken) return;
     safeSendMessage({ action: 'geminiError', error: error.message });
   } finally {
-    isProcessing = false;
+    if (myToken === runToken) isProcessing = false;
   }
 }
 
