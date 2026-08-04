@@ -1137,6 +1137,12 @@ chrome.runtime.onMessage.addListener((message) => {
 
   if (message.action === 'geminiProgress') {
     showStatus(message.text, 'info');
+    // 進捗が届いている＝処理は生きているので、見張りタイマーを延長する
+    // (Gemini側のエラーからのやり直し中に3分で打ち切られるのを防ぐ)
+    if (batchAwait) {
+      armWatchdog(batchAwait);
+      showBatchToast(message.text);
+    }
   }
 });
 
@@ -2162,6 +2168,8 @@ async function recordAndNext(result, reason, mail) {
     withMail.slice(0, withMail.length - BATCH_KEEP_MAILS).forEach(e => { e.mail = null; e.mailTrimmed = true; });
   }
   if (result === 'sent') await addSentRegistry(b.queue[b.idx]);
+  // 生成まで進めた候補者があれば、Geminiは動いているので連続エラーの数を戻す
+  if (result === 'sent' || result === 'ready') b.errStreak = 0;
   b.idx++;
   b.phase = 'profile';
   b.regen = 0;
@@ -2170,7 +2178,9 @@ async function recordAndNext(result, reason, mail) {
   showBatchCounter(b);
   if (b.stopped) { await finishBatch(b); return; }
 
-  const wait = 5000 + Math.floor(Math.random() * 5000);
+  // 通常は5〜10秒。Geminiが不調なときは間隔を空けて様子を見る
+  let wait = 5000 + Math.floor(Math.random() * 5000);
+  if (b.errStreak) wait = Math.min(60000 * b.errStreak, 180000);
 
   // キューを使い切ったら一覧へ戻って補充する(件数上限なし)
   if (b.idx >= b.queue.length) {
@@ -2641,12 +2651,31 @@ async function batchRetryOrSkip(b, reason, mail) {
   await recordAndNext('skip', `検証不合格: ${reason}`, mail);
 }
 
+// Gemini側の不調が続いたら止める回数
+// (不調のまま続けると、候補者を「エラー」で消費してしまうため)
+const BATCH_MAX_ERROR_STREAK = 4;
+
 async function batchHandleError(err) {
   const kind = batchAwait;
   batchAwait = null;
   const b = await getBatch();
   if (!b || !b.active) return;
-  await batchRetryOrSkip(b, `${kind === 'verify' ? 'AI検査' : '生成'}エラー: ${String(err).slice(0, 120)}`, batchMail);
+
+  // Geminiが不調なときは、次々に候補者を消費せず一旦止める
+  const msg = String(err);
+  const geminiDown = /Gemini側のエラー|送信できませんでした|応答タイムアウト|入力エリアが見つかりません/.test(msg);
+  if (geminiDown) {
+    b.errStreak = (b.errStreak || 0) + 1;
+    await setBatch(b);
+    if (b.errStreak >= BATCH_MAX_ERROR_STREAK) {
+      await finishBatch(b,
+        `Geminiの不調が${b.errStreak}回続いたため一時停止しました（${msg.slice(0, 60)}）。` +
+        `15〜30分ほどおいてから「再」を押すと、続きから再開できます。`);
+      return;
+    }
+  }
+
+  await batchRetryOrSkip(b, `${kind === 'verify' ? 'AI検査' : '生成'}エラー: ${msg.slice(0, 120)}`, batchMail);
 }
 
 // ── 完了レポート ──
