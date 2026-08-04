@@ -2073,11 +2073,9 @@ async function requestBatchStop() {
     // ハードストップ: 生成待ちで固まっていても即座に終了する
     // (旧実装は停止フラグを立てるだけで、回答が返らないと処理されず固まった)
     clearTimeout(batchWatchdog);
-    clearInterval(pauseTicker); // 休憩中でも止められるようにする
     batchAwait = null;
     batchRouted = false;
     b.stopped = true;
-    b.pauseUntil = null;
     await finishBatch(b, '停止しました');
   } else {
     showBatchToast('実行中のバッチはありません');
@@ -2102,13 +2100,6 @@ async function gotoCurrent() {
   if (!b || !b.active) return;
   // 待機中に停止が押されていたら、次の候補へ進まず即終了する
   if (b.stopped) { await finishBatch(b); return; }
-  // キューを使い切っている場合は一覧に戻って補充する(存在しないIDを開かない)
-  if (b.idx >= b.queue.length) {
-    b.phase = 'refill';
-    await setBatch(b);
-    gotoListPage(b, b.pageNo || null);
-    return;
-  }
   location.href = '/shop-pc/member/detail/index/' + b.queue[b.idx];
 }
 
@@ -2187,19 +2178,9 @@ async function recordAndNext(result, reason, mail) {
   showBatchCounter(b);
   if (b.stopped) { await finishBatch(b); return; }
 
-  // 通常は20〜40秒。短時間に集中させるとGemini側でエラーになりやすいため間隔を空ける。
-  // 不調のときはさらに長く待つ
-  let wait = 20000 + Math.floor(Math.random() * 20000);
+  // 通常は5〜10秒。Geminiが不調なときは間隔を空けて様子を見る
+  let wait = 5000 + Math.floor(Math.random() * 5000);
   if (b.errStreak) wait = Math.min(60000 * b.errStreak, 180000);
-
-  // 一定回数Geminiを使ったら休憩する
-  if ((b.geminiCalls || 0) >= BATCH_BREAK_EVERY) {
-    b.geminiCalls = 0;
-    await setBatch(b);
-    await pauseBatch(b, BATCH_BREAK_MS, 'break',
-      `${BATCH_BREAK_EVERY}件ごとの休憩中`);
-    return;
-  }
 
   // キューを使い切ったら一覧へ戻って補充する(件数上限なし)
   if (b.idx >= b.queue.length) {
@@ -2407,15 +2388,6 @@ async function routeBatch() {
   const b = await getBatch();
   if (!b || !b.active) { batchRouted = false; hideBatchCounter(); return; }
   showBatchCounter(b);
-
-  // 休憩中は何もせず、時間が来たら自動で再開する
-  // (画面を再読み込みしても休憩の残り時間は保たれる)
-  if (b.pauseUntil && Date.now() < b.pauseUntil) {
-    showPauseCountdown(b, '休憩中');
-    setTimeout(resumeFromPause, b.pauseUntil - Date.now() + 1000);
-    return;
-  }
-
   const target = b.queue[b.idx];
 
   // 送信後: サイトは検索一覧に戻る(実機確認済み)。スカウト画面のままなら失敗
@@ -2470,13 +2442,10 @@ async function resumeBatch() {
   }
   // 応答待ちなどの一時状態をリセットし、現在の候補者からやり直す
   clearTimeout(batchWatchdog);
-  clearInterval(pauseTicker);
   batchAwait = null;
   batchMail = null;
   batchRouted = false;
   b.regen = 0;
-  b.pauseUntil = null; // 「再」を押したときは休憩を打ち切ってすぐ再開する
-  b.errStreak = 0;
   if (b.phase === 'scout' || b.phase === 'postSend') b.phase = 'profile';
   await setBatch(b);
   showBatchCounter(b);
@@ -2539,9 +2508,6 @@ async function batchScoutStep(target) {
 async function batchRequestGenerate(profileText) {
   const b = await getBatch();
   if (!b || !b.active) return;
-  // Geminiを使った回数を数える(一定回数ごとに休憩を入れるため)
-  b.geminiCalls = (b.geminiCalls || 0) + 1;
-  await setBatch(b);
   batchAwait = 'generate';
   batchMail = null;
   armWatchdog('generate');
@@ -2685,52 +2651,9 @@ async function batchRetryOrSkip(b, reason, mail) {
   await recordAndNext('skip', `検証不合格: ${reason}`, mail);
 }
 
-// Gemini側の不調が続いたら休憩する回数
+// Gemini側の不調が続いたら止める回数
 // (不調のまま続けると、候補者を「エラー」で消費してしまうため)
 const BATCH_MAX_ERROR_STREAK = 4;
-// Geminiを何回使ったら休憩を入れるか(短時間に集中させないための間引き)
-const BATCH_BREAK_EVERY = 40;
-const BATCH_BREAK_MS = 10 * 60 * 1000;      // 定期休憩: 10分
-const BATCH_ERROR_PAUSE_MS = 20 * 60 * 1000; // 不調時の休憩: 20分
-const BATCH_MAX_AUTO_PAUSE = 3;              // 不調休憩の回数上限(超えたら終了)
-
-// ── 休憩(一定時間おいて自動で再開する) ──
-async function pauseBatch(b, ms, kind, note) {
-  b.pauseUntil = Date.now() + ms;
-  if (kind === 'error') b.pauseCount = (b.pauseCount || 0) + 1;
-  b.errStreak = 0;
-  await setBatch(b);
-  showPauseCountdown(b, note);
-  setTimeout(resumeFromPause, ms + 1000);
-}
-
-let pauseTicker = null;
-function showPauseCountdown(b, note) {
-  clearInterval(pauseTicker);
-  const tick = () => {
-    const left = Math.max(0, (b.pauseUntil || 0) - Date.now());
-    const min = Math.ceil(left / 60000);
-    showBatchToast(`${note || '休憩中'}（あと約${min}分で自動的に再開します）`);
-    if (left <= 0) clearInterval(pauseTicker);
-  };
-  tick();
-  pauseTicker = setInterval(tick, 30000);
-}
-
-async function resumeFromPause() {
-  const b = await getBatch();
-  if (!b || !b.active || b.stopped) return;
-  const left = (b.pauseUntil || 0) - Date.now();
-  if (left > 0) { setTimeout(resumeFromPause, left + 1000); return; }
-  clearInterval(pauseTicker);
-  b.pauseUntil = null;
-  // キューを使い切った状態で休憩に入っていた場合は、一覧に戻って補充する
-  if (b.idx >= b.queue.length) b.phase = 'refill';
-  await setBatch(b);
-  showBatchToast('再開します...');
-  if (b.phase === 'refill') gotoListPage(b, b.pageNo || null);
-  else gotoCurrent();
-}
 
 async function batchHandleError(err) {
   const kind = batchAwait;
@@ -2738,23 +2661,16 @@ async function batchHandleError(err) {
   const b = await getBatch();
   if (!b || !b.active) return;
 
-  // Geminiが不調なときは、次々に候補者を消費せず休憩を入れる
+  // Geminiが不調なときは、次々に候補者を消費せず一旦止める
   const msg = String(err);
   const geminiDown = /Gemini側のエラー|送信できませんでした|応答タイムアウト|入力エリアが見つかりません/.test(msg);
   if (geminiDown) {
     b.errStreak = (b.errStreak || 0) + 1;
     await setBatch(b);
     if (b.errStreak >= BATCH_MAX_ERROR_STREAK) {
-      if ((b.pauseCount || 0) >= BATCH_MAX_AUTO_PAUSE) {
-        await finishBatch(b,
-          `Geminiの不調が続くため終了しました（${msg.slice(0, 60)}）。` +
-          `時間をおいてから「動」または「再」で再開してください。`);
-        return;
-      }
-      // いまの候補者は消費せず、休憩後に同じ人からやり直す
-      b.phase = 'profile';
-      b.regen = 0;
-      await pauseBatch(b, BATCH_ERROR_PAUSE_MS, 'error', 'Geminiが混み合っているため休憩中');
+      await finishBatch(b,
+        `Geminiの不調が${b.errStreak}回続いたため一時停止しました（${msg.slice(0, 60)}）。` +
+        `15〜30分ほどおいてから「再」を押すと、続きから再開できます。`);
       return;
     }
   }
