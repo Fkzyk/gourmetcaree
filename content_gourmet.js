@@ -2028,6 +2028,36 @@ function getSearchResultCount() {
   return isNaN(n) ? null : n;
 }
 
+// ── 地域の照合(検索条件が外れたまま送ってしまう事故の防止) ──
+const PREFECTURES = [
+  '北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県',
+  '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県',
+  '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県',
+  '静岡県', '愛知県', '三重県', '滋賀県', '京都府', '大阪府', '兵庫県',
+  '奈良県', '和歌山県', '鳥取県', '島根県', '岡山県', '広島県', '山口県',
+  '徳島県', '香川県', '愛媛県', '高知県', '福岡県', '佐賀県', '長崎県',
+  '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県'
+];
+// 地域の照合を行う上限。これより多くの都道府県が並ぶ検索は
+// 「地域を絞っていない」とみなして照合しない(正しい候補者を弾かないため)
+const PREF_CHECK_MAX = 10;
+
+function extractPrefecture(text) {
+  const t = String(text || '');
+  return PREFECTURES.find(p => t.includes(p)) || null;
+}
+
+// 一覧に並んでいる候補者の都道府県を集める(開始時の「対象地域」として記憶する)
+function collectPrefsOnPage() {
+  const prefs = [];
+  document.querySelectorAll('tr').forEach(tr => {
+    if (!tr.querySelector('a[href*="/member/detail/index/"]')) return;
+    const p = extractPrefecture(tr.textContent || '');
+    if (p && !prefs.includes(p)) prefs.push(p);
+  });
+  return prefs;
+}
+
 // ── 一覧の「次へ」リンクを探す ──
 // このサイトのページ送りはJavaScript式(href="javascript:..." や "#")なので、
 // hrefの内容では有効性を判断できない。無効化クラスの有無だけで判定する
@@ -2069,7 +2099,9 @@ async function startBatch(dryRun) {
     pageNo: currentPageNumber() || 1,
     lastPageSig: pageSignature(),
     // 開始時の検索件数。一覧を開き直したときの照合に使う
-    searchCount: getSearchResultCount()
+    searchCount: getSearchResultCount(),
+    // 開始時の一覧に並んでいた都道府県(対象地域の照合に使う)
+    prefs: collectPrefsOnPage()
   });
   const b = await getBatch();
   showBatchCounter(b);
@@ -2287,6 +2319,7 @@ async function batchRefillStepInner() {
     if (form) b.searchForm = form;
     b.pageNo = currentPageNumber() || b.pageNo || 1;
     if (!b.searchCount && nowCount) b.searchCount = nowCount;
+    if (!b.prefs || !b.prefs.length) b.prefs = collectPrefsOnPage();
     await setBatch(b);
     showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
@@ -2495,6 +2528,31 @@ async function batchProfileStep(target) {
 
   // 氏名は 画面の表 → プロフィール本文 → 一覧で拾った氏名 の順に見る
   const bNames = await getBatch();
+
+  // 対象地域の照合。検索条件が外れて別の地域の方が混ざった場合に送らない
+  // (開始時の一覧に無かった都道府県の方は、その回は見送る)
+  const prefs = (bNames && bNames.prefs) || [];
+  if (prefs.length && prefs.length <= PREF_CHECK_MAX) {
+    const domFields = readProfileFieldsFromDom();
+    const addr = domFields['住所'] || profileFieldValue(
+      text.split('\n').map(l => l.trim()).filter(Boolean), '住所');
+    const pref = extractPrefecture(addr);
+    if (pref && !prefs.includes(pref)) {
+      const bb = await getBatch();
+      bb.outOfArea = (bb.outOfArea || 0) + 1;
+      await setBatch(bb);
+      if (bb.outOfArea >= 3) {
+        await finishBatch(bb,
+          `検索条件が引き継がれていない可能性があるため停止しました` +
+          `（対象地域外の方が続けて${bb.outOfArea}名: 直近は${pref}）。` +
+          `条件を入れて「この条件で検索する」を押し直してから「動」で再開してください。`);
+        return;
+      }
+      await recordAndNext('skip', `対象地域外(${pref})`);
+      return;
+    }
+    if (bNames.outOfArea) { bNames.outOfArea = 0; await setBatch(bNames); }
+  }
   const ng = ngCheck(text, await getCustomNgWords(), {
     nameNg: await getForeignNameNg(),
     fields: readProfileFieldsFromDom(),
