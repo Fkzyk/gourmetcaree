@@ -2237,7 +2237,7 @@ async function recordAndNext(result, reason, mail) {
   }
   if (result === 'sent') await addSentRegistry(b.queue[b.idx]);
   // 生成まで進めた候補者があれば、Geminiは動いているので連続エラーの数を戻す
-  if (result === 'sent' || result === 'ready') b.errStreak = 0;
+  if (result === 'sent' || result === 'ready') { b.errStreak = 0; b.pauseCount = 0; }
   b.idx++;
   b.phase = 'profile';
   b.regen = 0;
@@ -2561,28 +2561,6 @@ async function batchProfileStep(target) {
   // 氏名は 画面の表 → プロフィール本文 → 一覧で拾った氏名 の順に見る
   const bNames = await getBatch();
 
-  // 対象地域の照合。検索条件が外れて別の地域の方が混ざった場合に送らない
-  // (開始時の一覧に無かった都道府県の方は、その回は見送る)
-  const prefs = (bNames && bNames.prefs) || [];
-  if (prefs.length && prefs.length <= PREF_CHECK_MAX) {
-    const domFields = readProfileFieldsFromDom();
-    const addr = domFields['住所'] || profileFieldValue(
-      text.split('\n').map(l => l.trim()).filter(Boolean), '住所');
-    const pref = extractPrefecture(addr);
-    if (pref && !prefs.includes(pref)) {
-      // 止めずに見送るだけにする(送信は防ぎつつ、処理は続ける)
-      const bb = await getBatch();
-      bb.outOfArea = (bb.outOfArea || 0) + 1;
-      await setBatch(bb);
-      if (bb.outOfArea === 5 || bb.outOfArea === 50) {
-        showBatchToast(`対象地域外の方が${bb.outOfArea}名続いています（直近: ${pref}）。` +
-          `検索条件を確認してください。処理は続けます`);
-      }
-      await recordAndNext('skip', `対象地域外(${pref})`);
-      return;
-    }
-    if (bNames.outOfArea) { bNames.outOfArea = 0; await setBatch(bNames); }
-  }
   const ng = ngCheck(text, await getCustomNgWords(), {
     nameNg: await getForeignNameNg(),
     fields: readProfileFieldsFromDom(),
@@ -2597,6 +2575,31 @@ async function batchProfileStep(target) {
     }
     await recordAndNext('skip', ng);
     return;
+  }
+
+  // 対象地域の照合(NG判定の後に行う)。
+  // 検索条件が外れて別の地域の方が混ざった場合に、送らずに見送る。
+  // NG地域(北海道・沖縄)は上のNG判定で恒久的に記録済みなのでここには来ない
+  const prefs = (bNames && bNames.prefs) || [];
+  if (prefs.length && prefs.length <= PREF_CHECK_MAX) {
+    const addr = readProfileFieldsFromDom()['住所'] || profileFieldValue(
+      text.split('\n').map(l => l.trim()).filter(Boolean), '住所');
+    const pref = extractPrefecture(addr);
+    const bb = await getBatch();
+    if (!bb || !bb.active) return;
+    if (pref && !prefs.includes(pref)) {
+      // 止めずに見送るだけにする(送信は防ぎつつ、処理は続ける)
+      bb.outOfArea = (bb.outOfArea || 0) + 1;
+      await setBatch(bb);
+      if (bb.outOfArea === 5 || bb.outOfArea === 50) {
+        showBatchToast(`対象地域外の方が${bb.outOfArea}名続いています（直近: ${pref}）。` +
+          `検索条件を確認してください。処理は続けます`);
+      }
+      await recordAndNext('skip', `対象地域外(${pref})`);
+      return;
+    }
+    // 対象地域内の方が現れたら連続数を戻す(最新の状態に対して書く)
+    if (bb.outOfArea) { bb.outOfArea = 0; await setBatch(bb); }
   }
 
   await storeProfile(target, text);
