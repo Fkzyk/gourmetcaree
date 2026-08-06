@@ -1137,6 +1137,12 @@ chrome.runtime.onMessage.addListener((message) => {
 
   if (message.action === 'geminiProgress') {
     showStatus(message.text, 'info');
+    // 進捗が届いている＝処理は生きているので、見張りタイマーを延長する
+    // (Gemini側のエラーからのやり直し中に3分で打ち切られるのを防ぐ)
+    if (batchAwait) {
+      armWatchdog(batchAwait);
+      showBatchToast(message.text);
+    }
   }
 });
 
@@ -1241,6 +1247,10 @@ const NG_OCCUPATIONS = [
   ['パン職人', 'パン製造', '製パン', 'ブーランジェ'],
   ['バリスタ']
 ];
+
+// 住んでいる地域で対象外にする都道府県(住所の欄だけを見る。
+// 職務経歴に出てくる地名では判定しない)
+const NG_PREFECTURES = ['北海道', '沖縄県'];
 
 // NGワード(職種以外。プロフィールに含まれていたら対象外)
 // 画面の「語」ボタンから追加した語はこれに上乗せされる
@@ -1490,6 +1500,14 @@ function ngCheck(profileText, extraWords, opts) {
     if (nameNg) return nameNg;
   }
 
+  // 住所がNG都道府県なら対象外
+  {
+    const addr = (o.fields && o.fields['住所']) || profileFieldValue(
+      text.split('\n').map(l => l.trim()).filter(Boolean), '住所');
+    const pref = typeof extractPrefecture === 'function' ? extractPrefecture(addr) : null;
+    if (pref && NG_PREFECTURES.includes(pref)) return `NG地域(${pref})`;
+  }
+
   // 基本情報しか登録されていない方は今回は見送る。
   // (NGではない。あとから経歴を登録される可能性があるので、次回また対象に含める)
   if (isSparseProfile(text, o.fields)) return '情報不足(基本情報のみ・詳細が未登録)';
@@ -1729,6 +1747,7 @@ async function showNgWordEditor() {
     `<div style="font-size:11px;color:#5f6368;margin-top:10px;line-height:1.6;">` +
     `<b>もとから設定されているNG（変更不要）</b><br>` +
     `職種: ${builtinOcc}<br>キーワード: ${builtinKw}<br>` +
+    `地域: ${NG_PREFECTURES.join('・')}にお住まいの方<br>` +
     `そのほか「転職回数が年齢の10の位以上」「飲食店経験年数が未経験」も自動で対象外になります。<br>` +
     `基本情報しか登録していない方は、NG登録せずその回だけ見送ります（次回また対象に含まれます）。</div>` +
     `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0;">` +
@@ -2010,6 +2029,48 @@ function findPageNumberLink(num) {
   }) || null;
 }
 
+// ── 検索結果の件数(「3044名が検索されました」)を読む ──
+// 一覧を開き直したときに件数が跳ね上がっていたら、検索条件が
+// 引き継がれていない(全国が対象になっている等)と判断するために使う
+function getSearchResultCount() {
+  const body = document.body;
+  const t = zenToHan((body && (body.innerText || body.textContent)) || '');
+  const m = t.match(/([0-9,]+)\s*名が検索されました/);
+  if (!m) return null;
+  const n = parseInt(m[1].replace(/,/g, ''), 10);
+  return isNaN(n) ? null : n;
+}
+
+// ── 地域の照合(検索条件が外れたまま送ってしまう事故の防止) ──
+const PREFECTURES = [
+  '北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県',
+  '茨城県', '栃木県', '群馬県', '埼玉県', '千葉県', '東京都', '神奈川県',
+  '新潟県', '富山県', '石川県', '福井県', '山梨県', '長野県', '岐阜県',
+  '静岡県', '愛知県', '三重県', '滋賀県', '京都府', '大阪府', '兵庫県',
+  '奈良県', '和歌山県', '鳥取県', '島根県', '岡山県', '広島県', '山口県',
+  '徳島県', '香川県', '愛媛県', '高知県', '福岡県', '佐賀県', '長崎県',
+  '熊本県', '大分県', '宮崎県', '鹿児島県', '沖縄県'
+];
+// 地域の照合を行う上限。これより多くの都道府県が並ぶ検索は
+// 「地域を絞っていない」とみなして照合しない(正しい候補者を弾かないため)
+const PREF_CHECK_MAX = 10;
+
+function extractPrefecture(text) {
+  const t = String(text || '');
+  return PREFECTURES.find(p => t.includes(p)) || null;
+}
+
+// 一覧に並んでいる候補者の都道府県を集める(開始時の「対象地域」として記憶する)
+function collectPrefsOnPage() {
+  const prefs = [];
+  document.querySelectorAll('tr').forEach(tr => {
+    if (!tr.querySelector('a[href*="/member/detail/index/"]')) return;
+    const p = extractPrefecture(tr.textContent || '');
+    if (p && !prefs.includes(p)) prefs.push(p);
+  });
+  return prefs;
+}
+
 // ── 一覧の「次へ」リンクを探す ──
 // このサイトのページ送りはJavaScript式(href="javascript:..." や "#")なので、
 // hrefの内容では有効性を判断できない。無効化クラスの有無だけで判定する
@@ -2049,7 +2110,11 @@ async function startBatch(dryRun) {
     // 一覧に戻るときに送信し直すための検索条件と、いま見ているページ番号
     searchForm: serializeSearchForm(),
     pageNo: currentPageNumber() || 1,
-    lastPageSig: pageSignature()
+    lastPageSig: pageSignature(),
+    // 開始時の検索件数。一覧を開き直したときの照合に使う
+    searchCount: getSearchResultCount(),
+    // 開始時の一覧に並んでいた都道府県(対象地域の照合に使う)
+    prefs: collectPrefsOnPage()
   });
   const b = await getBatch();
   showBatchCounter(b);
@@ -2067,9 +2132,11 @@ async function requestBatchStop() {
     // ハードストップ: 生成待ちで固まっていても即座に終了する
     // (旧実装は停止フラグを立てるだけで、回答が返らないと処理されず固まった)
     clearTimeout(batchWatchdog);
+    clearInterval(pauseTicker); // 休憩中でも止められるようにする
     batchAwait = null;
     batchRouted = false;
     b.stopped = true;
+    b.pauseUntil = null;
     await finishBatch(b, '停止しました');
   } else {
     showBatchToast('実行中のバッチはありません');
@@ -2094,6 +2161,13 @@ async function gotoCurrent() {
   if (!b || !b.active) return;
   // 待機中に停止が押されていたら、次の候補へ進まず即終了する
   if (b.stopped) { await finishBatch(b); return; }
+  // キューを使い切っている場合は一覧に戻って補充する(存在しないIDを開かない)
+  if (b.idx >= b.queue.length) {
+    b.phase = 'refill';
+    await setBatch(b);
+    gotoListPage(b, b.pageNo || null);
+    return;
+  }
   location.href = '/shop-pc/member/detail/index/' + b.queue[b.idx];
 }
 
@@ -2162,6 +2236,8 @@ async function recordAndNext(result, reason, mail) {
     withMail.slice(0, withMail.length - BATCH_KEEP_MAILS).forEach(e => { e.mail = null; e.mailTrimmed = true; });
   }
   if (result === 'sent') await addSentRegistry(b.queue[b.idx]);
+  // 生成まで進めた候補者があれば、Geminiは動いているので連続エラーの数を戻す
+  if (result === 'sent' || result === 'ready') { b.errStreak = 0; b.pauseCount = 0; }
   b.idx++;
   b.phase = 'profile';
   b.regen = 0;
@@ -2170,7 +2246,9 @@ async function recordAndNext(result, reason, mail) {
   showBatchCounter(b);
   if (b.stopped) { await finishBatch(b); return; }
 
-  const wait = 5000 + Math.floor(Math.random() * 5000);
+  // 通常は5〜10秒。Geminiが不調なときは間隔を空けて様子を見る
+  let wait = 5000 + Math.floor(Math.random() * 5000);
+  if (b.errStreak) wait = Math.min(60000 * b.errStreak, 180000);
 
   // キューを使い切ったら一覧へ戻って補充する(件数上限なし)
   if (b.idx >= b.queue.length) {
@@ -2227,6 +2305,16 @@ async function batchRefillStepInner() {
   }
   refillRetry = 0;
 
+  // 検索条件が引き継がれているかの確認。
+  // 開き直した一覧の件数が開始時より大きく増えていたら、条件が外れて
+  // 対象外の地域まで含まれている可能性が高いので、送らずに止める
+  // (止めはしない。実際の送信は候補者ごとの地域照合で防ぐ)
+  const nowCount = getSearchResultCount();
+  if (b.searchCount && nowCount && nowCount > b.searchCount + 50) {
+    showBatchToast(`検索条件が変わっている可能性があります` +
+      `（開始時 ${b.searchCount}名 → いま ${nowCount}名）。対象地域外の方は自動で見送ります`);
+  }
+
   // ページ送りをしたのに中身が前と同じなら、それ以上先には進めない
   // (最終ページに達した場合など。無限に同じページを見続けないための歯止め)
   const sig = pageSignature();
@@ -2250,6 +2338,8 @@ async function batchRefillStepInner() {
     const form = serializeSearchForm();
     if (form) b.searchForm = form;
     b.pageNo = currentPageNumber() || b.pageNo || 1;
+    if (!b.searchCount && nowCount) b.searchCount = nowCount;
+    if (!b.prefs || !b.prefs.length) b.prefs = collectPrefsOnPage();
     await setBatch(b);
     showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
@@ -2378,6 +2468,15 @@ async function routeBatch() {
   const b = await getBatch();
   if (!b || !b.active) { batchRouted = false; hideBatchCounter(); return; }
   showBatchCounter(b);
+
+  // 休憩中は何もせず、時間が来たら自動で再開する
+  // (画面を再読み込みしても休憩の残り時間は保たれる)
+  if (b.pauseUntil && Date.now() < b.pauseUntil) {
+    showPauseCountdown(b, '休憩中');
+    setTimeout(resumeFromPause, b.pauseUntil - Date.now() + 1000);
+    return;
+  }
+
   const target = b.queue[b.idx];
 
   // 送信後: サイトは検索一覧に戻る(実機確認済み)。スカウト画面のままなら失敗
@@ -2432,10 +2531,13 @@ async function resumeBatch() {
   }
   // 応答待ちなどの一時状態をリセットし、現在の候補者からやり直す
   clearTimeout(batchWatchdog);
+  clearInterval(pauseTicker);
   batchAwait = null;
   batchMail = null;
   batchRouted = false;
   b.regen = 0;
+  b.pauseUntil = null; // 「再」を押したら休憩を打ち切ってすぐ再開する
+  b.errStreak = 0;
   if (b.phase === 'scout' || b.phase === 'postSend') b.phase = 'profile';
   await setBatch(b);
   showBatchCounter(b);
@@ -2458,6 +2560,7 @@ async function batchProfileStep(target) {
 
   // 氏名は 画面の表 → プロフィール本文 → 一覧で拾った氏名 の順に見る
   const bNames = await getBatch();
+
   const ng = ngCheck(text, await getCustomNgWords(), {
     nameNg: await getForeignNameNg(),
     fields: readProfileFieldsFromDom(),
@@ -2472,6 +2575,31 @@ async function batchProfileStep(target) {
     }
     await recordAndNext('skip', ng);
     return;
+  }
+
+  // 対象地域の照合(NG判定の後に行う)。
+  // 検索条件が外れて別の地域の方が混ざった場合に、送らずに見送る。
+  // NG地域(北海道・沖縄)は上のNG判定で恒久的に記録済みなのでここには来ない
+  const prefs = (bNames && bNames.prefs) || [];
+  if (prefs.length && prefs.length <= PREF_CHECK_MAX) {
+    const addr = readProfileFieldsFromDom()['住所'] || profileFieldValue(
+      text.split('\n').map(l => l.trim()).filter(Boolean), '住所');
+    const pref = extractPrefecture(addr);
+    const bb = await getBatch();
+    if (!bb || !bb.active) return;
+    if (pref && !prefs.includes(pref)) {
+      // 止めずに見送るだけにする(送信は防ぎつつ、処理は続ける)
+      bb.outOfArea = (bb.outOfArea || 0) + 1;
+      await setBatch(bb);
+      if (bb.outOfArea === 5 || bb.outOfArea === 50) {
+        showBatchToast(`対象地域外の方が${bb.outOfArea}名続いています（直近: ${pref}）。` +
+          `検索条件を確認してください。処理は続けます`);
+      }
+      await recordAndNext('skip', `対象地域外(${pref})`);
+      return;
+    }
+    // 対象地域内の方が現れたら連続数を戻す(最新の状態に対して書く)
+    if (bb.outOfArea) { bb.outOfArea = 0; await setBatch(bb); }
   }
 
   await storeProfile(target, text);
@@ -2641,12 +2769,78 @@ async function batchRetryOrSkip(b, reason, mail) {
   await recordAndNext('skip', `検証不合格: ${reason}`, mail);
 }
 
+// Gemini側の不調が続いたら休憩する回数
+// (不調のまま続けると、候補者を「エラー」で消費してしまうため)
+const BATCH_MAX_ERROR_STREAK = 4;
+const BATCH_ERROR_PAUSE_MS = 20 * 60 * 1000; // 不調時の休憩: 20分後に自動再開
+const BATCH_MAX_AUTO_PAUSE = 6;              // 自動再開の回数上限(超えたら終了)
+
+// ── 休憩(一定時間おいて自動で再開する。押し直し不要) ──
+let pauseTicker = null;
+
+async function pauseBatch(b, ms, note) {
+  b.pauseUntil = Date.now() + ms;
+  b.pauseCount = (b.pauseCount || 0) + 1;
+  b.errStreak = 0;
+  await setBatch(b);
+  showPauseCountdown(b, note);
+  setTimeout(resumeFromPause, ms + 1000);
+}
+
+function showPauseCountdown(b, note) {
+  clearInterval(pauseTicker);
+  const tick = () => {
+    const left = Math.max(0, (b.pauseUntil || 0) - Date.now());
+    showBatchToast(`${note || '休憩中'}（あと約${Math.ceil(left / 60000)}分で自動的に再開します）`);
+    if (left <= 0) clearInterval(pauseTicker);
+  };
+  tick();
+  pauseTicker = setInterval(tick, 30000);
+}
+
+async function resumeFromPause() {
+  const b = await getBatch();
+  if (!b || !b.active || b.stopped) return;
+  const left = (b.pauseUntil || 0) - Date.now();
+  if (left > 0) { setTimeout(resumeFromPause, left + 1000); return; }
+  clearInterval(pauseTicker);
+  b.pauseUntil = null;
+  if (b.idx >= b.queue.length) b.phase = 'refill';
+  await setBatch(b);
+  showBatchToast('再開します...');
+  if (b.phase === 'refill') gotoListPage(b, b.pageNo || null);
+  else gotoCurrent();
+}
+
 async function batchHandleError(err) {
   const kind = batchAwait;
   batchAwait = null;
   const b = await getBatch();
   if (!b || !b.active) return;
-  await batchRetryOrSkip(b, `${kind === 'verify' ? 'AI検査' : '生成'}エラー: ${String(err).slice(0, 120)}`, batchMail);
+
+  // Geminiが不調なときは、次々に候補者を消費せず一旦止める
+  const msg = String(err);
+  const geminiDown = /Gemini側のエラー|送信できませんでした|応答タイムアウト|入力エリアが見つかりません/.test(msg);
+  if (geminiDown) {
+    b.errStreak = (b.errStreak || 0) + 1;
+    await setBatch(b);
+    if (b.errStreak >= BATCH_MAX_ERROR_STREAK) {
+      if ((b.pauseCount || 0) >= BATCH_MAX_AUTO_PAUSE) {
+        await finishBatch(b,
+          `Geminiの不調が続くため終了しました（${msg.slice(0, 60)}）。` +
+          `時間をおいてから「動」または「再」で再開してください。`);
+        return;
+      }
+      // 止めっぱなしにせず、20分後に自動で再開する。
+      // いまの候補者は消費せず、再開後に同じ人からやり直す
+      b.phase = 'profile';
+      b.regen = 0;
+      await pauseBatch(b, BATCH_ERROR_PAUSE_MS, 'Geminiが混み合っているため休憩中');
+      return;
+    }
+  }
+
+  await batchRetryOrSkip(b, `${kind === 'verify' ? 'AI検査' : '生成'}エラー: ${msg.slice(0, 120)}`, batchMail);
 }
 
 // ── 完了レポート ──
