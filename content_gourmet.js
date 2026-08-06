@@ -2016,6 +2016,18 @@ function findPageNumberLink(num) {
   }) || null;
 }
 
+// ── 検索結果の件数(「3044名が検索されました」)を読む ──
+// 一覧を開き直したときに件数が跳ね上がっていたら、検索条件が
+// 引き継がれていない(全国が対象になっている等)と判断するために使う
+function getSearchResultCount() {
+  const body = document.body;
+  const t = zenToHan((body && (body.innerText || body.textContent)) || '');
+  const m = t.match(/([0-9,]+)\s*名が検索されました/);
+  if (!m) return null;
+  const n = parseInt(m[1].replace(/,/g, ''), 10);
+  return isNaN(n) ? null : n;
+}
+
 // ── 一覧の「次へ」リンクを探す ──
 // このサイトのページ送りはJavaScript式(href="javascript:..." や "#")なので、
 // hrefの内容では有効性を判断できない。無効化クラスの有無だけで判定する
@@ -2055,7 +2067,9 @@ async function startBatch(dryRun) {
     // 一覧に戻るときに送信し直すための検索条件と、いま見ているページ番号
     searchForm: serializeSearchForm(),
     pageNo: currentPageNumber() || 1,
-    lastPageSig: pageSignature()
+    lastPageSig: pageSignature(),
+    // 開始時の検索件数。一覧を開き直したときの照合に使う
+    searchCount: getSearchResultCount()
   });
   const b = await getBatch();
   showBatchCounter(b);
@@ -2237,6 +2251,18 @@ async function batchRefillStepInner() {
   }
   refillRetry = 0;
 
+  // 検索条件が引き継がれているかの確認。
+  // 開き直した一覧の件数が開始時より大きく増えていたら、条件が外れて
+  // 対象外の地域まで含まれている可能性が高いので、送らずに止める
+  const nowCount = getSearchResultCount();
+  if (b.searchCount && nowCount && nowCount > b.searchCount + 50) {
+    await finishBatch(b,
+      `検索条件が引き継がれていない可能性があるため停止しました` +
+      `（開始時 ${b.searchCount}名 → いま ${nowCount}名）。` +
+      `お手数ですが、条件を入れて「この条件で検索する」を押し直してから「動」で再開してください。`);
+    return;
+  }
+
   // ページ送りをしたのに中身が前と同じなら、それ以上先には進めない
   // (最終ページに達した場合など。無限に同じページを見続けないための歯止め)
   const sig = pageSignature();
@@ -2260,6 +2286,7 @@ async function batchRefillStepInner() {
     const form = serializeSearchForm();
     if (form) b.searchForm = form;
     b.pageNo = currentPageNumber() || b.pageNo || 1;
+    if (!b.searchCount && nowCount) b.searchCount = nowCount;
     await setBatch(b);
     showBatchToast(`${fresh.length}件を追加。処理を続けます...`);
     setTimeout(gotoCurrent, 1500);
